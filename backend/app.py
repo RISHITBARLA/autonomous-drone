@@ -101,6 +101,10 @@ app = create_app()
 
 if __name__ == "__main__":
     logger.info("Starting drone companion server on %s:%d (debug=%s)", settings.HOST, settings.PORT, settings.DEBUG)
+    # Start background telemetry and vision services
+    mavlink_service.start()
+    if settings.QR_DETECTION_ENABLED:
+        vision_service.start()
     app.run(
         host=settings.HOST,
         port=settings.PORT,

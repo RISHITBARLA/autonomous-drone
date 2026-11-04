@@ -270,6 +270,8 @@ class MAVLinkService:
             "Starting physical MAVLink connection stream on %s (baud: %d)",
             self.connection_string, self.baudrate
         )
+        last_gcs_hb = 0.0
+        requested_streams = False
         while self.is_running:
             try:
                 # 1. Establish connection if not already open
@@ -283,12 +285,27 @@ class MAVLinkService:
                             autoreconnect=True,
                             timeout=2.0
                         )
+                        requested_streams = False
                     except Exception as e:
                         logger.warning("MAVLink connection attempt failed: %s; retrying in 2.0s", e)
                         with self._lock:
                             self._connected = False
                         time.sleep(2.0)
                         continue
+
+                now = time.time()
+                # Send periodic GCS heartbeat to announce companion presence to Pixhawk
+                if now - last_gcs_hb >= 1.0:
+                    try:
+                        from pymavlink import mavutil
+                        self._mav_connection.mav.heartbeat_send(
+                            mavutil.mavlink.MAV_TYPE_GCS,
+                            mavutil.mavlink.MAV_AUTOPILOT_INVALID,
+                            0, 0, 0
+                        )
+                        last_gcs_hb = now
+                    except Exception:
+                        pass
 
                 # 2. Wait for messages
                 msg = self._mav_connection.recv_match(blocking=True, timeout=1.0)
@@ -315,6 +332,21 @@ class MAVLinkService:
                         self._armed = bool(base_mode & 128)
                         self._system_status = "ACTIVE" if self._armed else "STANDBY"
                         self._autopilot_type = "ArduPilot ArduCopter"
+
+                    if not requested_streams:
+                        try:
+                            from pymavlink import mavutil
+                            self._mav_connection.mav.request_data_stream_send(
+                                self._target_system,
+                                self._target_component,
+                                mavutil.mavlink.MAV_DATA_STREAM_ALL,
+                                4,
+                                1
+                            )
+                            requested_streams = True
+                            logger.info("Requested all data streams from Pixhawk (sys: %d, comp: %d)", self._target_system, self._target_component)
+                        except Exception as e:
+                            logger.debug("Could not send request_data_stream: %s", e)
 
                 elif msg_type == "STATUSTEXT":
                     text_raw = getattr(msg, "text", "")
