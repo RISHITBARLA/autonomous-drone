@@ -176,3 +176,26 @@ def disable_arming_checks():
             "message": f"Failed setting bench parameters: {str(e)}"
         }), 500
 
+
+@flight_bp.route("/enable-arming-checks", methods=["POST"])
+def enable_arming_checks():
+    """
+    POST /api/flight/enable-arming-checks
+    Restore standard ArduPilot safety checks for outdoor flight:
+    - ARMING_CHECK = 1 (enable all pre-arm sensor checks)
+    - BRD_SAFETYENABLE = 1 (enable hardware safety switch)
+    """
+    from pymavlink import mavutil
+    try:
+        mavlink_service.set_param("ARMING_CHECK", 1.0, mavutil.mavlink.MAV_PARAM_TYPE_INT32)
+        mavlink_service.set_param("BRD_SAFETYENABLE", 1.0, mavutil.mavlink.MAV_PARAM_TYPE_INT32)
+        return jsonify({
+            "status": "success",
+            "message": "Standard flight safety checks restored: ARMING_CHECK=1, BRD_SAFETYENABLE=1"
+        }), 200
+    except Exception as e:
+        return jsonify({
+            "status": "error",
+            "message": f"Failed restoring safety checks: {str(e)}"
+        }), 500
+
