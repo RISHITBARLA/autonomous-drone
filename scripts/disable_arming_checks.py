@@ -4,11 +4,23 @@ Indoor Bench-Testing Configuration Script.
 Disables ARMING_CHECK and FENCE_ENABLE on Pixhawk running ArduPilot via MAVLink.
 Run on Raspberry Pi with Pixhawk connected at /dev/ttyACM0.
 """
+import glob
 import sys
 import time
 from pymavlink import mavutil
 
-DEVICE = "/dev/ttyACM0"
+
+def find_pixhawk_device():
+    """Auto-detect connected Pixhawk USB or serial port."""
+    if len(sys.argv) > 1:
+        return sys.argv[1]
+    candidates = sorted(glob.glob("/dev/ttyACM*") + glob.glob("/dev/ttyUSB*") + glob.glob("/dev/serial/by-id/*"))
+    if candidates:
+        return candidates[0]
+    return "/dev/ttyACM0"
+
+
+DEVICE = find_pixhawk_device()
 BAUD = 115200
 
 
@@ -86,3 +98,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
