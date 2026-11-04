@@ -52,10 +52,18 @@ class FlightController:
             return {
                 "flight_control_enabled": self.enabled,
                 "connected": snap.connected,
+                "is_simulated": snap.is_simulated,
+                "connection_type": snap.connection_type,
+                "autopilot_type": snap.autopilot_type,
+                "heartbeat_age_seconds": snap.heartbeat_age_seconds,
+                "is_stale": snap.is_stale,
                 "armed": snap.armed,
                 "flight_mode": snap.flight_mode,
+                "target_mode": settings.FLIGHT_MODE,
                 "altitude_m": snap.altitude_relative_m,
                 "battery_percent": snap.battery_remaining_percent,
+                "prearm_status": snap.prearm_status,
+                "prearm_messages": snap.prearm_messages,
                 "supported_modes": SUPPORTED_FLIGHT_MODES,
                 "command_count": len(self._command_history)
             }
@@ -75,13 +83,15 @@ class FlightController:
             if len(self._command_history) > 100:
                 self._command_history.pop()
 
-    def request_arm(self, arm: bool = True) -> Dict[str, Any]:
+    def request_arm(self, arm: bool = True, confirm: bool = True) -> Dict[str, Any]:
         """
-        Send arm or disarm request to Pixhawk flight controller.
+        Send normal arm or disarm request to Pixhawk flight controller.
+        Requires explicit operator confirmation for arming.
         Firmware pre-arm safety checks are evaluated on the flight controller itself.
+        FORCE_ARM is NEVER used (param2 = 0.0).
         """
         action = "ARM" if arm else "DISARM"
-        params = {"arm": arm}
+        params = {"arm": arm, "confirm": confirm}
 
         if not self.enabled:
             msg = f"Flight control is disabled by default. Enable FLIGHT_CONTROL_ENABLED to allow {action} commands."
@@ -89,12 +99,24 @@ class FlightController:
             self._record_command(action, params, False, msg)
             return {"success": False, "code": "CONTROL_DISABLED", "message": msg}
 
+        if arm and not confirm:
+            msg = "Arming requires explicit operator confirmation."
+            logger.warning(msg)
+            self._record_command(action, params, False, msg)
+            return {"success": False, "code": "CONFIRMATION_REQUIRED", "message": msg}
+
         snap = mavlink_service.get_snapshot()
         if not snap.connected:
             msg = f"Cannot {action}: No active MAVLink telemetry heartbeat connection"
             logger.error(msg)
             self._record_command(action, params, False, msg)
             return {"success": False, "code": "NOT_CONNECTED", "message": msg}
+
+        if snap.is_stale:
+            msg = f"Cannot {action}: MAVLink telemetry heartbeat is stale (age: {snap.heartbeat_age_seconds:.1f}s)"
+            logger.error(msg)
+            self._record_command(action, params, False, msg)
+            return {"success": False, "code": "HEARTBEAT_STALE", "message": msg}
 
         # Issue command through MAVLink
         if snap.is_simulated:
@@ -104,28 +126,55 @@ class FlightController:
             msg = f"Simulated Pixhawk successfully {action}ED"
             logger.info(msg)
             self._record_command(action, params, True, msg)
-            return {"success": True, "message": msg}
+            return {"success": True, "message": msg, "armed": arm}
 
         # Real hardware command
         try:
             from pymavlink import mavutil
-            conn = mavlink_service._mav_connection
-            if not conn:
-                raise RuntimeError("MAVLink connection handle not available")
 
-            # MAV_CMD_COMPONENT_ARM_DISARM: param1=1 to arm, 0 to disarm
-            conn.mav.command_long_send(
-                conn.target_system,
-                conn.target_component,
+            # MAV_CMD_COMPONENT_ARM_DISARM:
+            # param1: 1.0 to arm, 0.0 to disarm
+            # param2: 0.0 for NORMAL arming (NEVER 21196 force-arm magic number!)
+            mavlink_service.send_command_long(
                 mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM,
-                0,
-                1.0 if arm else 0.0,
-                0, 0, 0, 0, 0, 0
+                param1=1.0 if arm else 0.0,
+                param2=0.0,  # FORCE_ARM is strictly prohibited
+                param3=0.0, param4=0.0, param5=0.0, param6=0.0, param7=0.0
             )
-            msg = f"Sent MAVLink {action} command to Pixhawk (target_system={conn.target_system})"
-            logger.info(msg)
-            self._record_command(action, params, True, msg)
-            return {"success": True, "message": msg}
+
+            # Wait for armed state confirmation via heartbeat
+            confirmed = mavlink_service.wait_for_arm_state(arm, timeout=4.0)
+            if confirmed:
+                msg = f"Pixhawk successfully {action}ED and confirmed via heartbeat"
+                logger.info(msg)
+                self._record_command(action, params, True, msg)
+                return {"success": True, "message": msg, "armed": arm}
+
+            # Check if Pixhawk rejected arming with a pre-arm failure or command ACK
+            prearm_err = mavlink_service.get_latest_prearm_error(max_age_seconds=6.0)
+            ack = mavlink_service.get_command_ack(mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM, max_age_seconds=6.0)
+
+            if prearm_err:
+                err_msg = f"Pixhawk rejected {action}: {prearm_err}"
+            elif ack and ack.get("result") != 0:
+                result_code = ack.get("result")
+                result_names = {
+                    1: "TEMPORARILY_REJECTED",
+                    2: "DENIED",
+                    3: "UNSUPPORTED",
+                    4: "FAILED",
+                    5: "IN_PROGRESS",
+                    6: "CANCELLED"
+                }
+                res_name = result_names.get(result_code, f"CODE_{result_code}")
+                err_msg = f"Pixhawk rejected {action} command: {res_name}"
+            else:
+                err_msg = f"Pixhawk did not confirm {action} within timeout. Verify pre-arm checks and safety switch."
+
+            logger.error(err_msg)
+            self._record_command(action, params, False, err_msg)
+            return {"success": False, "code": "ARM_REJECTED" if arm else "DISARM_REJECTED", "message": err_msg}
+
         except Exception as e:
             err = f"Failed sending MAVLink {action} command: {e}"
             logger.error(err)
@@ -133,7 +182,7 @@ class FlightController:
             return {"success": False, "code": "COMMUNICATION_ERROR", "message": err}
 
     def request_mode(self, mode: str) -> Dict[str, Any]:
-        """Request vehicle flight mode transition (e.g. GUIDED, LOITER, RTL)."""
+        """Request vehicle flight mode transition (e.g. ALT_HOLD, GUIDED, LOITER, RTL)."""
         mode_upper = mode.strip().upper()
         params = {"mode": mode_upper}
 
@@ -153,6 +202,11 @@ class FlightController:
             self._record_command("SET_MODE", params, False, msg)
             return {"success": False, "code": "NOT_CONNECTED", "message": msg}
 
+        if snap.is_stale:
+            msg = f"Cannot set mode to {mode_upper}: Flight controller telemetry is stale"
+            self._record_command("SET_MODE", params, False, msg)
+            return {"success": False, "code": "HEARTBEAT_STALE", "message": msg}
+
         if snap.is_simulated:
             with mavlink_service._lock:
                 mavlink_service._flight_mode = mode_upper
@@ -162,16 +216,21 @@ class FlightController:
             return {"success": True, "message": msg, "flight_mode": mode_upper}
 
         try:
-            conn = mavlink_service._mav_connection
-            mode_id = conn.mode_mapping().get(mode_upper)
-            if mode_id is None:
-                raise ValueError(f"Mode mapping not found for {mode_upper}")
+            mavlink_service.send_set_mode(mode_upper)
 
-            conn.set_mode(mode_id)
-            msg = f"Requested Pixhawk flight mode {mode_upper} (ID: {mode_id})"
-            logger.info(msg)
-            self._record_command("SET_MODE", params, True, msg)
-            return {"success": True, "message": msg, "flight_mode": mode_upper}
+            # Wait for mode confirmation in subsequent heartbeat messages
+            confirmed = mavlink_service.wait_for_mode(mode_upper, timeout=3.5)
+            if confirmed:
+                msg = f"Pixhawk flight mode changed to {mode_upper} (confirmed via heartbeat)"
+                logger.info(msg)
+                self._record_command("SET_MODE", params, True, msg)
+                return {"success": True, "message": msg, "flight_mode": mode_upper}
+            else:
+                err_msg = f"Pixhawk mode transition to {mode_upper} timed out or was rejected"
+                logger.warning(err_msg)
+                self._record_command("SET_MODE", params, False, err_msg)
+                return {"success": False, "code": "MODE_CHANGE_FAILED", "message": err_msg}
+
         except Exception as e:
             err = f"Failed setting flight mode to {mode_upper}: {e}"
             logger.error(err)
@@ -198,6 +257,11 @@ class FlightController:
             self._record_command("TAKEOFF", params, False, msg)
             return {"success": False, "code": "NOT_CONNECTED", "message": msg}
 
+        if snap.is_stale:
+            msg = "Cannot takeoff: Flight controller telemetry is stale"
+            self._record_command("TAKEOFF", params, False, msg)
+            return {"success": False, "code": "HEARTBEAT_STALE", "message": msg}
+
         if snap.is_simulated:
             with mavlink_service._lock:
                 mavlink_service._armed = True
@@ -210,15 +274,14 @@ class FlightController:
 
         try:
             from pymavlink import mavutil
-            conn = mavlink_service._mav_connection
-            conn.mav.command_long_send(
-                conn.target_system,
-                conn.target_component,
+            mavlink_service.send_command_long(
                 mavutil.mavlink.MAV_CMD_NAV_TAKEOFF,
-                0,
-                0, 0, 0, 0, 0, 0,
-                altitude_m
+                param7=altitude_m
             )
+            msg = f"Sent takeoff command to {altitude_m:.1f}m"
+            logger.info(msg)
+            self._record_command("TAKEOFF", params, True, msg)
+            return {"success": True, "message": msg}
             msg = f"Sent takeoff command to {altitude_m:.1f}m"
             logger.info(msg)
             self._record_command("TAKEOFF", params, True, msg)

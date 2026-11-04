@@ -54,13 +54,18 @@ class Settings:
     QR_PROCESS_FPS: float = float(os.getenv("QR_PROCESS_FPS", "10.0"))
 
     # MAVLink & Flight Controller Communication
-    MAVLINK_CONNECTION_STRING: str = os.getenv("MAVLINK_CONNECTION_STRING", "udpin:0.0.0.0:14550")
+    MAVLINK_TRANSPORT: str = os.getenv("MAVLINK_TRANSPORT", "udp").lower()
+    MAVLINK_CONNECTION: str = os.getenv("MAVLINK_CONNECTION", os.getenv("MAVLINK_CONNECTION_STRING", "udpin:0.0.0.0:14550"))
+    MAVLINK_CONNECTION_STRING: str = MAVLINK_CONNECTION  # Retained for backward compatibility
     MAVLINK_BAUDRATE: int = int(os.getenv("MAVLINK_BAUDRATE", "57600"))
     MAVLINK_HEARTBEAT_TIMEOUT: float = float(os.getenv("MAVLINK_HEARTBEAT_TIMEOUT", "5.0"))
     MAVLINK_SIMULATE: bool = os.getenv("MAVLINK_SIMULATE", "true").lower() in ("true", "1", "yes")
 
     # Flight Control Subsystem (Disabled by default for safety)
     FLIGHT_CONTROL_ENABLED: bool = os.getenv("FLIGHT_CONTROL_ENABLED", "false").lower() in ("true", "1", "yes")
+    FLIGHT_MODE: str = os.getenv("FLIGHT_MODE", "ALT_HOLD").upper()
+    ARMING_CHECKS_ENABLED: bool = os.getenv("ARMING_CHECKS_ENABLED", "true").lower() in ("true", "1", "yes")
+    FORCE_ARM: bool = os.getenv("FORCE_ARM", "false").lower() in ("true", "1", "yes")
 
     # Logging settings
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO").upper()
@@ -73,6 +78,35 @@ class Settings:
         cls.LOGS_DIR.mkdir(parents=True, exist_ok=True)
         cls.DATA_DIR.mkdir(parents=True, exist_ok=True)
 
+    @classmethod
+    def validate_configuration(cls) -> None:
+        """Validate critical safety and runtime parameters at startup."""
+        if cls.FORCE_ARM:
+            raise ValueError(
+                "CRITICAL SAFETY VIOLATION: FORCE_ARM must never be enabled. "
+                "ArduPilot firmware pre-arm safety checks are mandatory."
+            )
+        if not cls.ARMING_CHECKS_ENABLED:
+            raise ValueError(
+                "CRITICAL SAFETY VIOLATION: ARMING_CHECKS_ENABLED cannot be disabled. "
+                "Firmware pre-arm safety checks must remain active."
+            )
+        valid_transports = {"udp", "tcp", "serial"}
+        if cls.MAVLINK_TRANSPORT not in valid_transports:
+            raise ValueError(
+                f"Invalid MAVLINK_TRANSPORT '{cls.MAVLINK_TRANSPORT}'. Must be one of {valid_transports}"
+            )
+        supported_modes = {
+            "STABILIZE", "ALT_HOLD", "LOITER", "GUIDED", "AUTO", "RTL", "LAND", "BRAKE", "POSHOLD"
+        }
+        if cls.FLIGHT_MODE not in supported_modes:
+            raise ValueError(
+                f"Invalid default FLIGHT_MODE '{cls.FLIGHT_MODE}'. Must be one of {supported_modes}"
+            )
+        if not cls.MAVLINK_CONNECTION or not cls.MAVLINK_CONNECTION.strip():
+            raise ValueError("MAVLINK_CONNECTION string cannot be empty.")
+
 
 settings = Settings()
 settings.ensure_directories()
+settings.validate_configuration()

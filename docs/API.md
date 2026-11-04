@@ -117,21 +117,31 @@ Base URL: `http://<DRONE_IP>:5000/api`
 > [!WARNING]
 > Flight commands are **disabled by default** (`FLIGHT_CONTROL_ENABLED=false`).
 > When disabled, all command endpoints immediately return HTTP 403 Forbidden.
+> Normal arming always evaluates ArduPilot firmware pre-arm safety checks. FORCE_ARM is never used.
 
 - **`GET /api/flight/status`**
-  - Safety interlock status, vehicle armed state, flight mode, and supported modes.
+  - Safety interlock status (`flight_control_enabled`), vehicle connection state, hardware type (`is_simulated`, `connection_type`), autopilot identity (`autopilot_type`), heartbeat freshness (`heartbeat_age_seconds`, `is_stale`), armed state, flight mode, target mode (`ALT_HOLD`), pre-arm checks status (`prearm_status`, `prearm_messages`), and supported modes.
 - **`POST /api/flight/arm`**
-  - Sends MAVLink arm command to Pixhawk.
+  - Sends normal arm command (`MAV_CMD_COMPONENT_ARM_DISARM`, `param1=1.0`, `param2=0.0`) to Pixhawk.
+  - Requires explicit operator confirmation in body: `{"confirm": true}` (returns HTTP 400 `CONFIRMATION_REQUIRED` if omitted).
+  - Waits for armed state confirmation from heartbeat; reports detailed pre-arm rejection reasons from Pixhawk `STATUSTEXT` if rejected.
 - **`POST /api/flight/disarm`**
-  - Sends MAVLink disarm command to Pixhawk.
+  - Sends normal disarm command (`MAV_CMD_COMPONENT_ARM_DISARM`, `param1=0.0`, `param2=0.0`) to Pixhawk and confirms disarmed state.
 - **`POST /api/flight/mode`**
-  - Requests mode change (`{"mode": "GUIDED" | "LOITER" | "RTL" | "LAND" | "STABILIZE"}`).
+  - Requests ArduCopter flight mode transition (`{"mode": "ALT_HOLD" | "STABILIZE" | "LOITER" | "GUIDED" | "AUTO" | "RTL" | "LAND" | "POSHOLD" | "BRAKE"}`).
+  - Maps `ALT_HOLD` to custom mode ID 2 and verifies mode change via heartbeat.
+- **`GET /api/flight/prearm-messages`**
+  - Retrieves circular buffer of recent Pixhawk `STATUSTEXT` messages filtered to pre-arm diagnostics.
+- **`POST /api/flight/connect`**
+  - Initiates connection to MAVLink endpoint (`connection_string`, `baudrate`, `simulate`).
+- **`POST /api/flight/disconnect`**
+  - Safely terminates MAVLink telemetry worker thread.
 - **`POST /api/flight/takeoff`**
-  - Requests takeoff to target altitude (`{"altitude_m": 10.0}`).
+  - Requests takeoff to target altitude (`{"altitude_m": 5.0}`).
 - **`POST /api/flight/rtl`**
   - Requests Return-to-Launch.
 - **`POST /api/flight/land`**
   - Requests vehicle auto-land.
 - **`GET /api/flight/command-log`**
-  - Audit history of all issued flight commands and outcomes.
+  - Audit history of all issued flight commands, timestamps, parameters, and outcomes.
 

@@ -27,12 +27,53 @@
 
 ---
 
-## 2. Pixhawk MAVLink Telemetry Issues
+## 2. Pixhawk MAVLink Telemetry & Flight Control Issues
 
-### Issue: Telemetry displays "OFFLINE" or "STALE"
-- **Cause:** No heartbeat packets received within `MAVLINK_HEARTBEAT_TIMEOUT` (5 seconds).
+### Issue: Telemetry displays "OFFLINE" or "NO HEARTBEAT" over Wi-Fi
+- **Cause:** Raspberry Pi is not receiving UDP MAVLink packets on port 14550 from the Pixhawk Wi-Fi bridge.
 - **Diagnostics:**
-  1. Verify UART wiring: Pi TX (GPIO 14) connects to Pixhawk RX; Pi RX (GPIO 15) connects to Pixhawk TX; GND to GND.
+  1. **Verify UDP Direction:**
+     - If the Wi-Fi bridge pushes packets to the Pi: use `MAVLINK_CONNECTION=udpin:0.0.0.0:14550`.
+     - If the Wi-Fi bridge hosts an Access Point at `192.168.4.1`: use `MAVLINK_CONNECTION=udpout:192.168.4.1:14550`.
+  2. **Check Pi Wi-Fi Connection:**
+     ```bash
+     ip addr show wlan0
+     ping <PIXHAWK_BRIDGE_IP>
+     ```
+  3. **Check Firewall:** Ensure port 14550/udp is not blocked:
+     ```bash
+     sudo ufw allow 14550/udp
+     ```
+  4. **Verify Incoming Packets with tcpdump:**
+     ```bash
+     sudo tcpdump -i any -n udp port 14550
+     ```
+
+### Issue: Telemetry displays "STALE (> 5.0s)"
+- **Cause:** Heartbeat stream interrupted or packet loss exceeded timeout.
+- **Resolution:**
+  - Check distance and signal quality between Raspberry Pi Wi-Fi and the Pixhawk bridge.
+  - Check Pixhawk power supply: low voltage on TELEM2 can reboot the ESP8266/ESP32 bridge.
+
+### Issue: Arming Command Returns HTTP 403 Forbidden
+- **Cause:** `FLIGHT_CONTROL_ENABLED` is set to `false` in `.env` (the safe default).
+- **Resolution:**
+  - In `.env`, set `FLIGHT_CONTROL_ENABLED=true` and restart the backend.
+  - Verify propellers are removed during bench testing!
+
+### Issue: Arming Command Returns HTTP 400 "PreArm: ..." or "ARM_REJECTED"
+- **Cause:** Pixhawk firmware safety checks failed (compass, GPS HDOP, safety switch, or gyro).
+- **Resolution:**
+  - Review the Pre-Arm STATUSTEXT diagnostics displayed in the Mission Control panel.
+  - Common fixes:
+    * `PreArm: Safety Switch`: Press the physical Pixhawk safety switch button until red LED is solid.
+    * `PreArm: Compass not healthy`: Keep drone away from metal tables and power supplies; perform compass calibration in Mission Planner.
+    * `PreArm: Bad GPS Position`: Move drone to an area with clear sky view to obtain 3D Fix (at least 10 satellites).
+    * `PreArm: Battery below failsafe`: Ensure battery voltage > 14.0V on 4S LiPo.
+
+### Issue: Serial UART Telemetry OFFLINE (if using wired /dev/ttyAMA0)
+- **Diagnostics:**
+  1. Verify UART wiring: Pi TX (GPIO 14) connects to Pixhawk TELEM2 RX; Pi RX (GPIO 15) connects to Pixhawk TELEM2 TX; GND to GND.
   2. Verify serial port permissions on Linux:
      ```bash
      sudo usermod -a -G dialout $USER

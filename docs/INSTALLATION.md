@@ -104,18 +104,31 @@ sudo apt install -y git python3-pip python3-venv python3-libcamera python3-picam
    cp .env.example .env
    nano .env
    ```
-   Set for physical hardware:
+   **Physical Hardware Configuration (Wi-Fi MAVLink over UDP):**
    ```ini
    CAMERA_BACKEND=auto
    MAVLINK_SIMULATE=false
-   MAVLINK_CONNECTION_STRING=/dev/ttyAMA0
+   MAVLINK_TRANSPORT=udp
+   MAVLINK_CONNECTION=udpin:0.0.0.0:14550
    MAVLINK_BAUDRATE=57600
+   FLIGHT_MODE=ALT_HOLD
+   ARMING_CHECKS_ENABLED=true
+   FORCE_ARM=false
+   # Set to true only when authorized for operator flight control (BENCH TEST: PROPELLERS REMOVED):
+   FLIGHT_CONTROL_ENABLED=false
    ```
+
+   *(Alternative: If using serial UART, set `MAVLINK_TRANSPORT=serial` and `MAVLINK_CONNECTION=/dev/ttyAMA0`)*.
 
 4. Verify tests pass on Raspberry Pi:
    ```bash
    pytest -v
    ```
+
+> [!CAUTION]
+> **Bench Testing Safety Mandate:**
+> Always remove all propellers before powering Pixhawk or testing arming/flight-control commands on the bench.
+> Never connect flight batteries with propellers mounted indoors.
 
 ### Step 4: Systemd Service Installation (Auto-Start on Boot)
 1. Copy systemd service file:

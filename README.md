@@ -17,10 +17,11 @@ Autonomous QR Code Detection, Computer Vision, MAVLink Telemetry, and Mission-Ba
 ## 2. Technology Stack
 - **Backend:** Python 3.10+, Flask, REST APIs, JSON
 - **Computer Vision:** OpenCV, libcamera/Picamera2, NumPy, Pillow, qrcode
-- **Flight Controller Communication:** MAVLink 2.0, pymavlink
+- **Flight Controller Communication:** MAVLink 2.0, pymavlink (Wi-Fi UDP & Serial UART)
+- **Flight Modes Supported:** ALT_HOLD (target), STABILIZE, LOITER, GUIDED, AUTO, RTL, LAND, POSHOLD, BRAKE
 - **System Monitoring:** psutil, Linux `/sys` thermal zones, `vcgencmd`
 - **Frontend Ground Station:** HTML5, Modern CSS3 (Glassmorphic Cyber-Aerospace design), Modern ES6 JavaScript
-- **Testing:** pytest, pytest-cov, unittest, Mock hardware interfaces
+- **Testing:** pytest, pytest-cov, unittest, Mock hardware interfaces (108/108 tests pass)
 
 ---
 
@@ -93,9 +94,10 @@ AUTONOMOUS-DRONE/
 | **Milestone 04** | **Mission Management & QR Association** | **Completed** | **Verified (11/11 mission tests pass)** |
 | **Milestone 05** | **Geofence & Navigation Planning** | **Completed** | **Verified (9/9 geofence tests pass)** |
 | **Milestone 06** | **Web Ground Station Full Suite** | **Completed** | **Verified (7-tab connected UI)** |
-| **Milestone 07** | **Isolated Flight-Control Subsystem** | **Completed** | **Verified (7/7 flight tests pass)** |
+| **Milestone 07** | **Flight-Control Subsystem & AltHold** | **Completed** | **Verified (24/24 flight tests pass)** |
 | **Milestone 08** | **End-to-End Integration & Reliability** | **Completed** | **Verified (4/4 E2E integration tests pass)** |
 | **Milestone 09** | **Production Deployment & Documentation** | **Completed** | **Verified (Systemd service & 6 guides)** |
+| **Milestone 10** | **AltHold Integration & Wi-Fi Bridge** | **Completed** | **Verified (108/108 total tests pass)** |
 
 ---
 
@@ -106,7 +108,7 @@ AUTONOMOUS-DRONE/
 # 1. Install dependencies
 py -3.10 -m pip install -r requirements.txt
 
-# 2. Run complete test suite (91 passing automated tests)
+# 2. Run complete test suite (108 passing automated tests)
 py -3.10 -m pytest -v
 
 # 3. Start companion server

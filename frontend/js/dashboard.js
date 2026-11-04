@@ -164,6 +164,36 @@ class DroneDashboard {
     this.newMissionWaypoints = document.getElementById('newMissionWaypoints');
     this.btnSaveNewMission = document.getElementById('btnSaveNewMission');
 
+    // Flight Control & AltHold Elements
+    this.fcConnDot = document.getElementById('fcConnDot');
+    this.fcHardwareModeBadge = document.getElementById('fcHardwareModeBadge');
+    this.fcHeartbeatBadge = document.getElementById('fcHeartbeatBadge');
+    this.fcArmedBadge = document.getElementById('fcArmedBadge');
+    this.fcDisabledNotice = document.getElementById('fcDisabledNotice');
+    this.fcStaleNotice = document.getElementById('fcStaleNotice');
+    this.fcModeSelect = document.getElementById('fcModeSelect');
+    this.btnSetFlightMode = document.getElementById('btnSetFlightMode');
+    this.btnOpenArmModal = document.getElementById('btnOpenArmModal');
+    this.btnDisarmDrone = document.getElementById('btnDisarmDrone');
+    this.btnEmergencyRTL = document.getElementById('btnEmergencyRTL');
+    this.fcPrearmBadge = document.getElementById('fcPrearmBadge');
+    this.fcPrearmBox = document.getElementById('fcPrearmBox');
+    this.fcAutopilotName = document.getElementById('fcAutopilotName');
+    this.fcEndpointName = document.getElementById('fcEndpointName');
+    this.fcCommandFeedback = document.getElementById('fcCommandFeedback');
+    this.fcCommandFeedbackText = document.getElementById('fcCommandFeedbackText');
+    this.fcCommandFeedbackTime = document.getElementById('fcCommandFeedbackTime');
+
+    // Arming Confirmation Modal
+    this.armConfirmModal = document.getElementById('armConfirmModal');
+    this.btnCloseArmModal = document.getElementById('btnCloseArmModal');
+    this.btnCancelArmModal = document.getElementById('btnCancelArmModal');
+    this.btnExecuteArmModal = document.getElementById('btnExecuteArmModal');
+    this.chkArmSafetyConfirm = document.getElementById('chkArmSafetyConfirm');
+    this.modalTargetMode = document.getElementById('modalTargetMode');
+    this.modalHwType = document.getElementById('modalHwType');
+    this.modalPrearmState = document.getElementById('modalPrearmState');
+
     // Geofence Elements
     this.geofenceSafetyBadge = document.getElementById('geofenceSafetyBadge');
     this.geofenceCanvas = document.getElementById('geofenceCanvas');
@@ -275,6 +305,44 @@ class DroneDashboard {
     if (this.btnSaveGeofence) {
       this.btnSaveGeofence.addEventListener('click', () => this.saveGeofenceConfig());
     }
+
+    // Flight Control & AltHold Subsystem Actions
+    if (this.btnSetFlightMode) {
+      this.btnSetFlightMode.addEventListener('click', () => {
+        const mode = this.fcModeSelect ? this.fcModeSelect.value : 'ALT_HOLD';
+        this.setFlightMode(mode);
+      });
+    }
+
+    if (this.btnOpenArmModal) {
+      this.btnOpenArmModal.addEventListener('click', () => this.openArmModal());
+    }
+
+    if (this.btnCloseArmModal) {
+      this.btnCloseArmModal.addEventListener('click', () => this.closeArmModal());
+    }
+
+    if (this.btnCancelArmModal) {
+      this.btnCancelArmModal.addEventListener('click', () => this.closeArmModal());
+    }
+
+    if (this.chkArmSafetyConfirm && this.btnExecuteArmModal) {
+      this.chkArmSafetyConfirm.addEventListener('change', () => {
+        this.btnExecuteArmModal.disabled = !this.chkArmSafetyConfirm.checked;
+      });
+    }
+
+    if (this.btnExecuteArmModal) {
+      this.btnExecuteArmModal.addEventListener('click', () => this.executeArm());
+    }
+
+    if (this.btnDisarmDrone) {
+      this.btnDisarmDrone.addEventListener('click', () => this.executeDisarm());
+    }
+
+    if (this.btnEmergencyRTL) {
+      this.btnEmergencyRTL.addEventListener('click', () => this.setFlightMode('RTL'));
+    }
   }
 
   switchTab(tabName) {
@@ -321,6 +389,7 @@ class DroneDashboard {
     this.pollTimer = setInterval(() => {
       this.fetchHealth();
       this.fetchTelemetry();
+      this.fetchFlightStatus();
       if (this.activeTab === 'qr') {
         this.fetchQRStatus();
       }
@@ -336,6 +405,7 @@ class DroneDashboard {
     this.fetchLatestCapture();
     this.fetchHealth();
     this.fetchTelemetry();
+    this.fetchFlightStatus();
     this.fetchQRStatus();
     this.fetchMissions();
     this.fetchGeofence();
@@ -508,9 +578,264 @@ class DroneDashboard {
       if (res.ok) {
         this.log(`MAVLink connection updated: ${connStr} (Sim: ${sim})`, 'success');
         this.fetchTelemetry();
+        this.fetchFlightStatus();
       }
     } catch (err) {
       this.log(`Failed updating MAVLink connection: ${err.message}`, 'error');
+    }
+  }
+
+  // -------------------------------------------------------------
+  // Flight Control & AltHold Subsystem
+  // -------------------------------------------------------------
+  async fetchFlightStatus() {
+    try {
+      const res = await fetch('/api/flight/status');
+      if (!res.ok) return;
+      const json = await res.json();
+      if (json.status === 'success' && json.data) {
+        this.updateFlightUI(json.data);
+      }
+    } catch (err) {
+      console.error('Error fetching flight status:', err);
+    }
+  }
+
+  updateFlightUI(d) {
+    // 1. Interlock notice
+    if (this.fcDisabledNotice) {
+      if (d.flight_control_enabled) {
+        this.fcDisabledNotice.classList.add('hidden');
+      } else {
+        this.fcDisabledNotice.classList.remove('hidden');
+      }
+    }
+
+    // 2. Hardware Mode Badge: physical vs simulation
+    if (this.fcHardwareModeBadge) {
+      if (d.is_simulated) {
+        this.fcHardwareModeBadge.textContent = 'SIMULATED VIRTUAL';
+        this.fcHardwareModeBadge.className = 'card-badge badge-hardware-sim';
+      } else {
+        this.fcHardwareModeBadge.textContent = 'PHYSICAL HARDWARE';
+        this.fcHardwareModeBadge.className = 'card-badge badge-hardware-phys';
+      }
+    }
+
+    // 3. Heartbeat & Connection Dot
+    const isConn = d.connected;
+    const isStale = d.is_stale;
+    const hbAge = d.heartbeat_age_seconds !== undefined ? Number(d.heartbeat_age_seconds).toFixed(1) : '--';
+
+    if (this.fcStaleNotice) {
+      if (isStale && isConn) {
+        this.fcStaleNotice.classList.remove('hidden');
+      } else {
+        this.fcStaleNotice.classList.add('hidden');
+      }
+    }
+
+    if (this.fcConnDot) {
+      if (!isConn) {
+        this.fcConnDot.style.backgroundColor = 'var(--accent-red)';
+      } else if (isStale) {
+        this.fcConnDot.style.backgroundColor = 'var(--accent-amber)';
+      } else {
+        this.fcConnDot.style.backgroundColor = 'var(--accent-green)';
+      }
+    }
+
+    if (this.fcHeartbeatBadge) {
+      if (!isConn) {
+        this.fcHeartbeatBadge.textContent = 'NO HEARTBEAT';
+        this.fcHeartbeatBadge.className = 'card-badge';
+      } else if (isStale) {
+        this.fcHeartbeatBadge.textContent = `STALE (${hbAge}s)`;
+        this.fcHeartbeatBadge.className = 'card-badge';
+      } else {
+        this.fcHeartbeatBadge.textContent = `HB: ${hbAge}s`;
+        this.fcHeartbeatBadge.className = 'card-badge normal';
+      }
+    }
+
+    // 4. Armed Status & Button Interlocks
+    if (this.fcArmedBadge) {
+      this.fcArmedBadge.textContent = d.armed ? 'ARMED' : 'DISARMED';
+      this.fcArmedBadge.className = d.armed ? 'card-badge highlight' : 'card-badge normal';
+    }
+
+    // ARM button rules:
+    // - Disabled when flight control is disabled
+    // - Disabled when heartbeat is missing or stale
+    // - Disabled when vehicle is already armed
+    if (this.btnOpenArmModal) {
+      const armAllowed = d.flight_control_enabled && isConn && !isStale && !d.armed;
+      this.btnOpenArmModal.disabled = !armAllowed;
+      if (!d.flight_control_enabled) {
+        this.btnOpenArmModal.title = 'Flight control is disabled in settings (FLIGHT_CONTROL_ENABLED=false)';
+      } else if (!isConn || isStale) {
+        this.btnOpenArmModal.title = 'No active/fresh MAVLink heartbeat from Pixhawk';
+      } else if (d.armed) {
+        this.btnOpenArmModal.title = 'Vehicle is already armed';
+      } else {
+        this.btnOpenArmModal.title = 'Click to open confirmation modal and arm vehicle in selected mode';
+      }
+    }
+
+    // DISARM button rules:
+    if (this.btnDisarmDrone) {
+      this.btnDisarmDrone.disabled = !d.flight_control_enabled || !isConn || !d.armed;
+    }
+
+    // Mode select synchronization
+    if (this.fcModeSelect && d.flight_mode && document.activeElement !== this.fcModeSelect) {
+      const exists = Array.from(this.fcModeSelect.options).some(o => o.value === d.flight_mode);
+      if (exists) {
+        this.fcModeSelect.value = d.flight_mode;
+      }
+    }
+
+    // 5. Pre-Arm Messages & Status
+    if (this.fcPrearmBadge) {
+      const pStatus = d.prearm_status || 'STANDBY';
+      this.fcPrearmBadge.textContent = pStatus;
+      if (pStatus === 'CHECKS_FAILED') {
+        this.fcPrearmBadge.className = 'card-badge highlight';
+      } else if (pStatus === 'PASSED' || pStatus === 'READY') {
+        this.fcPrearmBadge.className = 'card-badge normal';
+      } else {
+        this.fcPrearmBadge.className = 'card-badge';
+      }
+    }
+
+    if (this.fcPrearmBox && d.prearm_messages && d.prearm_messages.length > 0) {
+      this.fcPrearmBox.innerHTML = '';
+      d.prearm_messages.forEach(msg => {
+        const div = document.createElement('div');
+        const isWarn = msg.toLowerCase().includes('fail') || msg.toLowerCase().includes('bad') || msg.toLowerCase().includes('not');
+        div.className = `prearm-msg-item ${isWarn ? 'warn' : 'ok'}`;
+        div.textContent = msg;
+        this.fcPrearmBox.appendChild(div);
+      });
+    }
+
+    // 6. Autopilot Info & Endpoint
+    if (this.fcAutopilotName) {
+      this.fcAutopilotName.textContent = d.autopilot_type || 'ArduPilot ArduCopter';
+    }
+  }
+
+  async setFlightMode(targetMode) {
+    if (!targetMode) return;
+    this.updateCommandFeedback(`Requesting flight mode: ${targetMode}...`, 'pending');
+    try {
+      const res = await fetch('/api/flight/mode', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode: targetMode })
+      });
+      const json = await res.json();
+      if (res.ok && json.status === 'success') {
+        this.updateCommandFeedback(`Mode successfully switched to ${targetMode}`, 'accepted');
+        this.log(`Flight Mode changed to ${targetMode}`, 'success');
+        this.fetchFlightStatus();
+      } else {
+        const msg = json.message || 'Mode change rejected';
+        this.updateCommandFeedback(`Mode change failed: ${msg}`, 'rejected');
+        this.log(`Mode change failed: ${msg}`, 'error');
+      }
+    } catch (err) {
+      this.updateCommandFeedback(`Communication error: ${err.message}`, 'rejected');
+      this.log(`Flight mode error: ${err.message}`, 'error');
+    }
+  }
+
+  openArmModal() {
+    if (!this.armConfirmModal) return;
+    const selectedMode = this.fcModeSelect ? this.fcModeSelect.value : 'ALT_HOLD';
+    if (this.modalTargetMode) this.modalTargetMode.textContent = selectedMode;
+    if (this.modalHwType) {
+      const isSim = this.fcHardwareModeBadge && this.fcHardwareModeBadge.textContent.includes('SIMULATED');
+      this.modalHwType.textContent = isSim ? 'Simulated Virtual' : 'Physical Pixhawk 2.4.8 Hardware';
+    }
+    if (this.modalPrearmState) {
+      this.modalPrearmState.textContent = this.fcPrearmBadge ? this.fcPrearmBadge.textContent : 'CHECKING';
+    }
+    if (this.chkArmSafetyConfirm) this.chkArmSafetyConfirm.checked = false;
+    if (this.btnExecuteArmModal) this.btnExecuteArmModal.disabled = true;
+    this.armConfirmModal.classList.remove('hidden');
+  }
+
+  closeArmModal() {
+    if (this.armConfirmModal) this.armConfirmModal.classList.add('hidden');
+  }
+
+  async executeArm() {
+    this.closeArmModal();
+    const mode = this.fcModeSelect ? this.fcModeSelect.value : 'ALT_HOLD';
+    this.updateCommandFeedback(`ARM command sent to Pixhawk (${mode}). Evaluating pre-arm checks...`, 'pending');
+    try {
+      const res = await fetch('/api/flight/arm', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ confirm: true })
+      });
+      const json = await res.json();
+      if (res.ok && json.status === 'success') {
+        this.updateCommandFeedback(`Vehicle ARMED successfully in ${mode}`, 'accepted');
+        this.log(`Vehicle ARMED in ${mode}`, 'success');
+        this.fetchFlightStatus();
+      } else {
+        const errMsg = json.message || 'Arming rejected by Pixhawk firmware';
+        this.updateCommandFeedback(`Arming REJECTED: ${errMsg}`, 'rejected');
+        this.log(`Arming REJECTED: ${errMsg}`, 'error');
+      }
+    } catch (err) {
+      this.updateCommandFeedback(`Network error during ARM request: ${err.message}`, 'rejected');
+      this.log(`Arming network error: ${err.message}`, 'error');
+    }
+  }
+
+  async executeDisarm() {
+    this.updateCommandFeedback('DISARM command sent to Pixhawk...', 'pending');
+    try {
+      const res = await fetch('/api/flight/disarm', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+      });
+      const json = await res.json();
+      if (res.ok && json.status === 'success') {
+        this.updateCommandFeedback('Vehicle DISARMED successfully', 'accepted');
+        this.log('Vehicle DISARMED', 'info');
+        this.fetchFlightStatus();
+      } else {
+        const errMsg = json.message || 'Disarm rejected';
+        this.updateCommandFeedback(`Disarm failed: ${errMsg}`, 'rejected');
+        this.log(`Disarm failed: ${errMsg}`, 'error');
+      }
+    } catch (err) {
+      this.updateCommandFeedback(`Network error during DISARM: ${err.message}`, 'rejected');
+      this.log(`Disarm network error: ${err.message}`, 'error');
+    }
+  }
+
+  updateCommandFeedback(msg, status) {
+    if (this.fcCommandFeedbackText) this.fcCommandFeedbackText.textContent = msg;
+    if (this.fcCommandFeedbackTime) {
+      const now = new Date();
+      this.fcCommandFeedbackTime.textContent = now.toTimeString().split(' ')[0];
+    }
+    if (this.fcCommandFeedback) {
+      if (status === 'accepted') {
+        this.fcCommandFeedback.style.borderColor = 'var(--accent-green)';
+        this.fcCommandFeedback.style.backgroundColor = 'rgba(0, 230, 118, 0.1)';
+      } else if (status === 'rejected') {
+        this.fcCommandFeedback.style.borderColor = 'var(--accent-red)';
+        this.fcCommandFeedback.style.backgroundColor = 'rgba(255, 23, 68, 0.1)';
+      } else if (status === 'pending') {
+        this.fcCommandFeedback.style.borderColor = 'var(--accent-cyan)';
+        this.fcCommandFeedback.style.backgroundColor = 'rgba(0, 229, 255, 0.1)';
+      }
     }
   }
 

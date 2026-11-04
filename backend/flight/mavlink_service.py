@@ -10,7 +10,7 @@ issued by this subsystem.
 import math
 import time
 import threading
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from dataclasses import dataclass, asdict
 
 from config.settings import settings
@@ -34,6 +34,8 @@ COPTER_MODES = {
     17: "BRAKE"
 }
 
+ARDUCOPTER_MODE_IDS = {v: k for k, v in COPTER_MODES.items()}
+
 
 @dataclass
 class TelemetrySnapshot:
@@ -47,6 +49,14 @@ class TelemetrySnapshot:
     flight_mode: str
     armed: bool
     system_status: str
+
+    # Connection & Autopilot Identity
+    connection_type: str
+    autopilot_type: str
+    target_system: int
+    target_component: int
+    prearm_status: str
+    prearm_messages: list
 
     # GPS & Navigation
     latitude: float
@@ -95,6 +105,7 @@ class MAVLinkService:
         self.simulate = simulate if simulate is not None else settings.MAVLINK_SIMULATE
 
         self._lock = threading.Lock()
+        self._command_lock = threading.Lock()
         self._running = False
         self._worker_thread: Optional[threading.Thread] = None
         self._mav_connection: Any = None
@@ -105,6 +116,12 @@ class MAVLinkService:
         self._flight_mode = "DISCONNECTED"
         self._armed = False
         self._system_status = "STANDBY"
+        self._target_system = 1
+        self._target_component = 1
+        self._autopilot_type = "ArduPilot ArduCopter" if not self.simulate else "Simulated Pixhawk"
+
+        self._status_texts: List[Dict[str, Any]] = []
+        self._command_acks: Dict[int, Dict[str, Any]] = {}
 
         self._lat = 0.0
         self._lon = 0.0
@@ -153,6 +170,11 @@ class MAVLinkService:
                 self._satellites = 14
                 self._battery_voltage = 15.4
                 self._battery_percent = 95
+                self._autopilot_type = "Simulated Pixhawk"
+                self._status_texts = [
+                    {"timestamp": time.time(), "severity": 6, "text": "ArduCopter V4.3.5 (Simulated)", "is_prearm": False},
+                    {"timestamp": time.time(), "severity": 6, "text": "PreArm: Passed all safety checks", "is_prearm": True}
+                ]
 
             self._worker_thread = threading.Thread(
                 target=self._telemetry_worker,
@@ -244,11 +266,15 @@ class MAVLinkService:
 
     def _run_mavlink_stream(self) -> None:
         """Physical MAVLink connection receiver with automatic reconnect on failure."""
+        logger.info(
+            "Starting physical MAVLink connection stream on %s (baud: %d)",
+            self.connection_string, self.baudrate
+        )
         while self.is_running:
             try:
                 # 1. Establish connection if not already open
                 if not self._mav_connection:
-                    logger.info("Attempting MAVLink connection to %s (baud: %d)", self.connection_string, self.baudrate)
+                    logger.info("Attempting physical MAVLink connection to %s", self.connection_string)
                     try:
                         from pymavlink import mavutil
                         self._mav_connection = mavutil.mavlink_connection(
@@ -258,10 +284,11 @@ class MAVLinkService:
                             timeout=2.0
                         )
                     except Exception as e:
-                        logger.warning("MAVLink connection attempt failed: %s; falling back to simulated stream", e)
-                        self.simulate = True
-                        self._run_simulated_stream()
-                        return
+                        logger.warning("MAVLink connection attempt failed: %s; retrying in 2.0s", e)
+                        with self._lock:
+                            self._connected = False
+                        time.sleep(2.0)
+                        continue
 
                 # 2. Wait for messages
                 msg = self._mav_connection.recv_match(blocking=True, timeout=1.0)
@@ -275,12 +302,50 @@ class MAVLinkService:
                     with self._lock:
                         self._connected = True
                         self._last_heartbeat = now
+                        src_sys = msg.get_srcSystem()
+                        src_comp = msg.get_srcComponent()
+                        if src_sys > 0:
+                            self._target_system = src_sys
+                        if src_comp > 0:
+                            self._target_component = src_comp
                         custom_mode = getattr(msg, "custom_mode", 0)
                         self._flight_mode = COPTER_MODES.get(custom_mode, f"MODE_{custom_mode}")
                         # Check base_mode armed bit (128 = MAV_MODE_FLAG_SAFETY_ARMED)
                         base_mode = getattr(msg, "base_mode", 0)
                         self._armed = bool(base_mode & 128)
                         self._system_status = "ACTIVE" if self._armed else "STANDBY"
+                        self._autopilot_type = "ArduPilot ArduCopter"
+
+                elif msg_type == "STATUSTEXT":
+                    text_raw = getattr(msg, "text", "")
+                    if isinstance(text_raw, bytes):
+                        text = text_raw.decode("utf-8", errors="ignore").rstrip("\x00")
+                    else:
+                        text = str(text_raw).rstrip("\x00")
+                    sev = getattr(msg, "severity", 6)
+                    entry = {
+                        "timestamp": now,
+                        "severity": sev,
+                        "text": text,
+                        "is_prearm": "prearm" in text.lower()
+                    }
+                    with self._lock:
+                        self._status_texts.append(entry)
+                        if len(self._status_texts) > 50:
+                            self._status_texts.pop(0)
+                    logger.info("MAVLink STATUSTEXT (sev=%d): %s", sev, text)
+
+                elif msg_type == "COMMAND_ACK":
+                    cmd_id = getattr(msg, "command", 0)
+                    res_code = getattr(msg, "result", -1)
+                    entry = {
+                        "timestamp": now,
+                        "command": cmd_id,
+                        "result": res_code
+                    }
+                    with self._lock:
+                        self._command_acks[cmd_id] = entry
+                    logger.info("MAVLink COMMAND_ACK: cmd=%d, result=%d", cmd_id, res_code)
 
                 elif msg_type == "GLOBAL_POSITION_INT":
                     with self._lock:
@@ -343,6 +408,20 @@ class MAVLinkService:
             }
             fix_name = fix_names.get(self._gps_fix, "Unknown")
 
+            conn_type = "SIMULATION" if self.simulate else (
+                "UDP_WIFI" if "udp" in str(self.connection_string).lower() else "SERIAL_UART"
+            )
+
+            # Pre-arm analysis from recent STATUSTEXT messages
+            prearm_msgs = [t["text"] for t in self._status_texts if t.get("is_prearm")]
+            prearm_errors = [m for m in prearm_msgs if "passed" not in m.lower()]
+            if prearm_errors:
+                prearm_status = "CHECKS_FAILED"
+            elif any("passed" in m.lower() for m in prearm_msgs):
+                prearm_status = "PASSED"
+            else:
+                prearm_status = "READY" if self.simulate else "STANDBY"
+
             return TelemetrySnapshot(
                 timestamp=now,
                 iso_time=time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now)),
@@ -353,6 +432,12 @@ class MAVLinkService:
                 flight_mode=self._flight_mode if is_connected else "DISCONNECTED",
                 armed=self._armed if is_connected else False,
                 system_status=self._system_status if is_connected else "OFFLINE",
+                connection_type=conn_type,
+                autopilot_type=self._autopilot_type if is_connected else "Unknown",
+                target_system=self._target_system,
+                target_component=self._target_component,
+                prearm_status=prearm_status,
+                prearm_messages=prearm_msgs[-10:],
                 latitude=self._lat,
                 longitude=self._lon,
                 altitude_relative_m=self._alt_rel,
@@ -382,7 +467,123 @@ class MAVLinkService:
             self.simulate = simulate
             self._last_heartbeat = 0.0
             self._connected = False
+            self._autopilot_type = "Simulated Pixhawk" if simulate else "ArduPilot ArduCopter"
         self.start()
+
+    def get_status_texts(self, limit: int = 20, prearm_only: bool = False) -> List[Dict[str, Any]]:
+        """Return circular buffer of vehicle STATUSTEXT messages."""
+        with self._lock:
+            texts = list(self._status_texts)
+        if prearm_only:
+            texts = [t for t in texts if t.get("is_prearm")]
+        return texts[-limit:]
+
+    def get_latest_prearm_error(self, max_age_seconds: float = 10.0) -> Optional[str]:
+        """Return the most recent pre-arm failure message within given time window."""
+        now = time.time()
+        with self._lock:
+            for entry in reversed(self._status_texts):
+                if entry.get("is_prearm") and (now - entry["timestamp"] <= max_age_seconds):
+                    if "passed" not in entry["text"].lower():
+                        return entry["text"]
+        return None
+
+    def get_command_ack(self, command_id: int, max_age_seconds: float = 5.0) -> Optional[Dict[str, Any]]:
+        """Retrieve recent COMMAND_ACK for a given command ID."""
+        now = time.time()
+        with self._lock:
+            ack = self._command_acks.get(command_id)
+            if ack and (now - ack["timestamp"] <= max_age_seconds):
+                return ack
+        return None
+
+    def wait_for_mode(self, expected_mode: str, timeout: float = 3.5) -> bool:
+        """Wait until vehicle reports expected flight mode in heartbeat."""
+        start_t = time.time()
+        expected_upper = expected_mode.strip().upper()
+        while time.time() - start_t < timeout:
+            snap = self.get_snapshot()
+            if snap.connected and snap.flight_mode == expected_upper:
+                return True
+            time.sleep(0.05)
+        return False
+
+    def wait_for_arm_state(self, expected_armed: bool, timeout: float = 5.0) -> bool:
+        """Wait until vehicle reports expected armed state in heartbeat."""
+        start_t = time.time()
+        while time.time() - start_t < timeout:
+            snap = self.get_snapshot()
+            if snap.connected and snap.armed == expected_armed:
+                return True
+            time.sleep(0.05)
+        return False
+
+    def send_command_long(
+        self,
+        command: int,
+        param1: float = 0.0,
+        param2: float = 0.0,
+        param3: float = 0.0,
+        param4: float = 0.0,
+        param5: float = 0.0,
+        param6: float = 0.0,
+        param7: float = 0.0,
+        confirmation: int = 0
+    ) -> bool:
+        """Thread-safe dispatch of MAVLink COMMAND_LONG."""
+        with self._command_lock:
+            if not self._mav_connection:
+                raise RuntimeError("MAVLink connection handle not available")
+            sys_id = getattr(self._mav_connection, "target_system", None) or self._target_system or 1
+            comp_id = getattr(self._mav_connection, "target_component", None) or self._target_component or 1
+            self._mav_connection.mav.command_long_send(
+                sys_id,
+                comp_id,
+                command,
+                confirmation,
+                float(param1),
+                float(param2),
+                float(param3),
+                float(param4),
+                float(param5),
+                float(param6),
+                float(param7)
+            )
+            return True
+
+    def send_set_mode(self, mode_name: str) -> bool:
+        """Thread-safe request to switch ArduCopter flight mode."""
+        mode_upper = mode_name.strip().upper()
+        mode_id = ARDUCOPTER_MODE_IDS.get(mode_upper)
+        if mode_id is None:
+            raise ValueError(f"Unknown ArduCopter mode '{mode_upper}'")
+
+        with self._command_lock:
+            if not self._mav_connection:
+                raise RuntimeError("MAVLink connection handle not available")
+
+            # Method 1: Using pymavlink set_mode if mapping available
+            try:
+                if hasattr(self._mav_connection, "set_mode"):
+                    self._mav_connection.set_mode(mode_id)
+                    return True
+            except Exception:
+                pass
+
+            # Method 2: MAV_CMD_DO_SET_MODE (176)
+            from pymavlink import mavutil
+            sys_id = getattr(self._mav_connection, "target_system", None) or self._target_system or 1
+            comp_id = getattr(self._mav_connection, "target_component", None) or self._target_component or 1
+            self._mav_connection.mav.command_long_send(
+                sys_id,
+                comp_id,
+                mavutil.mavlink.MAV_CMD_DO_SET_MODE,
+                0,
+                1.0,  # MAV_MODE_FLAG_CUSTOM_MODE_ENABLED
+                float(mode_id),
+                0, 0, 0, 0, 0
+            )
+            return True
 
 
 # Global singleton instance
