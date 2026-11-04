@@ -54,6 +54,8 @@ class FlightController:
                 "connected": snap.connected,
                 "is_simulated": snap.is_simulated,
                 "connection_type": snap.connection_type,
+                "connection_string": mavlink_service.connection_string,
+                "baudrate": mavlink_service.baudrate,
                 "autopilot_type": snap.autopilot_type,
                 "heartbeat_age_seconds": snap.heartbeat_age_seconds,
                 "is_stale": snap.is_stale,

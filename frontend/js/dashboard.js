@@ -144,6 +144,9 @@ class DroneDashboard {
     this.telemVolts = document.getElementById('telemVolts');
     this.telemAmps = document.getElementById('telemAmps');
     this.mavlinkConnInput = document.getElementById('mavlinkConnInput');
+    if (this.mavlinkConnInput) {
+      this.mavlinkConnInput.addEventListener('focus', () => { this._mavlinkInputFocused = true; });
+    }
     this.mavlinkBaudSelect = document.getElementById('mavlinkBaudSelect');
     this.mavlinkSimSelect = document.getElementById('mavlinkSimSelect');
     this.btnUpdateMavlinkConn = document.getElementById('btnUpdateMavlinkConn');
@@ -722,6 +725,12 @@ class DroneDashboard {
     // 6. Autopilot Info & Endpoint
     if (this.fcAutopilotName) {
       this.fcAutopilotName.textContent = d.autopilot_type || 'ArduPilot ArduCopter';
+    }
+    if (this.fcEndpointName && d.connection_string) {
+      this.fcEndpointName.textContent = d.connection_string;
+    }
+    if (this.mavlinkConnInput && !this._mavlinkInputFocused && d.connection_string) {
+      this.mavlinkConnInput.value = d.connection_string;
     }
   }
 
