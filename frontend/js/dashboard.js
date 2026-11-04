@@ -183,6 +183,7 @@ class DroneDashboard {
     this.fcPrearmBox = document.getElementById('fcPrearmBox');
     this.fcAutopilotName = document.getElementById('fcAutopilotName');
     this.fcEndpointName = document.getElementById('fcEndpointName');
+    this.btnDisableArmingChecks = document.getElementById('btnDisableArmingChecks');
     this.fcCommandFeedback = document.getElementById('fcCommandFeedback');
     this.fcCommandFeedbackText = document.getElementById('fcCommandFeedbackText');
     this.fcCommandFeedbackTime = document.getElementById('fcCommandFeedbackTime');
@@ -319,6 +320,9 @@ class DroneDashboard {
 
     if (this.btnOpenArmModal) {
       this.btnOpenArmModal.addEventListener('click', () => this.openArmModal());
+    }
+    if (this.btnDisableArmingChecks) {
+      this.btnDisableArmingChecks.addEventListener('click', () => this.disableArmingChecks());
     }
 
     if (this.btnCloseArmModal) {
@@ -825,6 +829,29 @@ class DroneDashboard {
     } catch (err) {
       this.updateCommandFeedback(`Network error during DISARM: ${err.message}`, 'rejected');
       this.log(`Disarm network error: ${err.message}`, 'error');
+    }
+  }
+
+  async disableArmingChecks() {
+    this.updateCommandFeedback('Sending MAVLink parameter updates to Pixhawk (ARMING_CHECK=0, FENCE_ENABLE=0, BRD_SAFETYENABLE=0)...', 'pending');
+    try {
+      const res = await fetch('/api/flight/disable-arming-checks', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+      });
+      const json = await res.json();
+      if (res.ok && json.status === 'success') {
+        this.updateCommandFeedback('Pre-arm & safety switch checks disabled on Pixhawk (Bench Mode active)', 'accepted');
+        this.log('Indoor bench parameters applied on Pixhawk (ARMING_CHECK=0, FENCE_ENABLE=0, BRD_SAFETYENABLE=0)', 'success');
+        this.fetchFlightStatus();
+      } else {
+        const msg = json.message || 'Failed applying bench parameters';
+        this.updateCommandFeedback(`Failed: ${msg}`, 'rejected');
+        this.log(`Bench mode error: ${msg}`, 'error');
+      }
+    } catch (err) {
+      this.updateCommandFeedback(`Network error: ${err.message}`, 'rejected');
+      this.log(`Error: ${err.message}`, 'error');
     }
   }
 

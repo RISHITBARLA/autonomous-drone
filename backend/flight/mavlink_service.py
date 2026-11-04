@@ -633,6 +633,33 @@ class MAVLinkService:
             )
             return True
 
+    def set_param(
+        self,
+        param_name: str,
+        param_val: float,
+        param_type: Optional[int] = None
+    ) -> bool:
+        """Thread-safe MAVLink PARAM_SET dispatch."""
+        with self._command_lock:
+            if not self._mav_connection:
+                if self.simulate:
+                    logger.info("Simulated PARAM_SET %s = %s", param_name, param_val)
+                    return True
+                raise RuntimeError("MAVLink connection handle not available")
+            from pymavlink import mavutil
+            ptype = param_type if param_type is not None else mavutil.mavlink.MAV_PARAM_TYPE_REAL32
+            sys_id = getattr(self._mav_connection, "target_system", None) or self._target_system or 1
+            comp_id = getattr(self._mav_connection, "target_component", None) or self._target_component or 1
+            self._mav_connection.mav.param_set_send(
+                sys_id,
+                comp_id,
+                param_name.encode("utf-8"),
+                float(param_val),
+                ptype
+            )
+            logger.info("Sent MAVLink PARAM_SET %s = %s (type=%d)", param_name, param_val, ptype)
+            return True
+
 
 # Global singleton instance
 mavlink_service = MAVLinkService()

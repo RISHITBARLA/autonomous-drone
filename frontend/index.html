@@ -691,9 +691,12 @@
 
                 <!-- Right: Pre-Arm Status & Telemetry Messages -->
                 <div>
-                  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-                    <h4 style="font-size: 0.85rem; color: var(--text-muted); text-transform: uppercase;">Pre-Arm Status &amp; STATUSTEXT</h4>
-                    <span class="card-badge" id="fcPrearmBadge">READY</span>
+                  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; flex-wrap: wrap; gap: 6px;">
+                    <h4 style="font-size: 0.85rem; color: var(--text-muted); text-transform: uppercase; margin: 0;">Pre-Arm Status &amp; STATUSTEXT</h4>
+                    <div style="display: flex; gap: 6px; align-items: center;">
+                      <button class="btn btn-secondary" id="btnDisableArmingChecks" style="font-size: 0.72rem; padding: 4px 8px; border-color: var(--accent-amber); color: var(--accent-amber);" title="Set ARMING_CHECK=0, FENCE_ENABLE=0, BRD_SAFETYENABLE=0 on Pixhawk">🛠️ Disable Checks (Bench Test)</button>
+                      <span class="card-badge" id="fcPrearmBadge">READY</span>
+                    </div>
                   </div>
                   <div class="prearm-box" id="fcPrearmBox">
                     <div class="prearm-msg-item ok">[Pixhawk] Awaiting pre-arm checks...</div>

@@ -151,3 +151,28 @@ def get_command_log():
         "data": log
     }), 200
 
+
+@flight_bp.route("/disable-arming-checks", methods=["POST"])
+def disable_arming_checks():
+    """
+    POST /api/flight/disable-arming-checks
+    Configure Pixhawk for indoor bench testing:
+    - ARMING_CHECK = 0 (disable pre-arm sensor checks)
+    - FENCE_ENABLE = 0 (disable geofence GPS position checks)
+    - BRD_SAFETYENABLE = 0 (disable hardware safety switch requirement)
+    """
+    from pymavlink import mavutil
+    try:
+        mavlink_service.set_param("ARMING_CHECK", 0.0, mavutil.mavlink.MAV_PARAM_TYPE_INT32)
+        mavlink_service.set_param("FENCE_ENABLE", 0.0, mavutil.mavlink.MAV_PARAM_TYPE_REAL32)
+        mavlink_service.set_param("BRD_SAFETYENABLE", 0.0, mavutil.mavlink.MAV_PARAM_TYPE_INT32)
+        return jsonify({
+            "status": "success",
+            "message": "Indoor bench parameters applied: ARMING_CHECK=0, FENCE_ENABLE=0, BRD_SAFETYENABLE=0"
+        }), 200
+    except Exception as e:
+        return jsonify({
+            "status": "error",
+            "message": f"Failed setting bench parameters: {str(e)}"
+        }), 500
+
