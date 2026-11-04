@@ -1,0 +1,25 @@
+# AUTONOMOUS-DRONE Core Dependencies
+# Production on Raspberry Pi 4 (Linux ARM) & Development on Windows
+
+# Web Backend & API
+Flask>=3.0.0,<3.2.0
+Flask-Cors>=4.0.0,<5.1.0
+python-dotenv>=1.0.0
+
+# System Monitoring & Hardware Telemetry
+psutil>=5.9.0
+
+# Computer Vision & Image Processing
+# Note: On Raspberry Pi OS, libcamera / picamera2 is provided via system apt packages:
+# sudo apt-get install python3-libcamera python3-picamera2
+opencv-python>=4.8.0; sys_platform != 'linux' or platform_machine != 'armv7l'
+numpy>=1.24.0
+Pillow>=10.0.0
+qrcode>=8.0.0
+
+# Flight Controller & Telemetry (Milestones 03+)
+pymavlink>=2.4.40
+
+# Development, Testing, & Diagnostics
+pytest>=7.4.0
+requests>=2.31.0

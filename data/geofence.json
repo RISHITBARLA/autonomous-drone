@@ -1,0 +1,28 @@
+{
+  "enabled": true,
+  "fence_type": "circular",
+  "circle_center_lat": 37.4093,
+  "circle_center_lon": -122.0641,
+  "circle_radius_m": 300.0,
+  "polygon_vertices": [
+    {
+      "lat": 37.411,
+      "lon": -122.066
+    },
+    {
+      "lat": 37.411,
+      "lon": -122.062
+    },
+    {
+      "lat": 37.4075,
+      "lon": -122.062
+    },
+    {
+      "lat": 37.4075,
+      "lon": -122.066
+    }
+  ],
+  "min_alt_m": 1.0,
+  "max_alt_m": 120.0,
+  "breach_action": "RTL"
+}

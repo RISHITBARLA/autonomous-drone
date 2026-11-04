@@ -1,0 +1,24 @@
+[Unit]
+Description=AUTONOMOUS-DRONE Companion Computer Service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=drone
+WorkingDirectory=/home/drone/AUTONOMOUS-DRONE
+Environment="PATH=/home/drone/AUTONOMOUS-DRONE/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin"
+EnvironmentFile=/home/drone/AUTONOMOUS-DRONE/.env
+ExecStart=/home/drone/AUTONOMOUS-DRONE/venv/bin/python backend/app.py
+Restart=always
+RestartSec=5s
+KillMode=process
+
+# Resource controls
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=autonomous-drone
+
+[Install]
+WantedBy=multi-user.target
+

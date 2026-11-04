@@ -1,0 +1,108 @@
+[
+  {
+    "id": "patrol-field-alpha",
+    "name": "Alpha Field Patrol",
+    "description": "Autonomous perimeter scan with QR target detection.",
+    "state": "READY",
+    "waypoints": [
+      {
+        "seq": 1,
+        "lat": 37.4093,
+        "lon": -122.0641,
+        "alt_m": 15.0,
+        "speed_m_s": 5.0,
+        "hold_time_s": 0.0,
+        "action": "TAKEOFF"
+      },
+      {
+        "seq": 2,
+        "lat": 37.4098,
+        "lon": -122.0635,
+        "alt_m": 20.0,
+        "speed_m_s": 5.0,
+        "hold_time_s": 0.0,
+        "action": "WAYPOINT"
+      },
+      {
+        "seq": 3,
+        "lat": 37.4092,
+        "lon": -122.0632,
+        "alt_m": 20.0,
+        "speed_m_s": 5.0,
+        "hold_time_s": 5.0,
+        "action": "LOITER"
+      },
+      {
+        "seq": 4,
+        "lat": 37.4093,
+        "lon": -122.0641,
+        "alt_m": 15.0,
+        "speed_m_s": 5.0,
+        "hold_time_s": 0.0,
+        "action": "RTL"
+      }
+    ],
+    "geofence_id": null,
+    "created_at": "2026-11-03T14:04:47.888752",
+    "updated_at": "2026-11-03T14:04:48.342406",
+    "state_history": [
+      {
+        "timestamp": 1793694887.8887522,
+        "iso_time": "2026-11-03T14:04:47.888752",
+        "state": "VALIDATED",
+        "reason": "Automatic validation pass"
+      },
+      {
+        "timestamp": 1793694888.3424058,
+        "iso_time": "2026-11-03T14:04:48.342406",
+        "state": "READY",
+        "reason": "Selected via verified QR payload"
+      }
+    ],
+    "validation_errors": []
+  },
+  {
+    "id": "e2e-patrol-01",
+    "name": "E2E Patrol Alpha",
+    "description": "",
+    "state": "READY",
+    "waypoints": [
+      {
+        "seq": 1,
+        "lat": 37.4093,
+        "lon": -122.0641,
+        "alt_m": 15.0,
+        "speed_m_s": 5.0,
+        "hold_time_s": 0.0,
+        "action": "TAKEOFF"
+      },
+      {
+        "seq": 2,
+        "lat": 37.4095,
+        "lon": -122.0638,
+        "alt_m": 20.0,
+        "speed_m_s": 5.0,
+        "hold_time_s": 0.0,
+        "action": "WAYPOINT"
+      }
+    ],
+    "geofence_id": null,
+    "created_at": "2026-11-03T14:13:30.170019",
+    "updated_at": "2026-11-04T11:58:18.303398",
+    "state_history": [
+      {
+        "timestamp": 1793695410.1700196,
+        "iso_time": "2026-11-03T14:13:30.170019",
+        "state": "VALIDATED",
+        "reason": "Automatic validation pass"
+      },
+      {
+        "timestamp": 1793695410.2131422,
+        "iso_time": "2026-11-03T14:13:30.213142",
+        "state": "READY",
+        "reason": "Selected via verified QR payload"
+      }
+    ],
+    "validation_errors": []
+  }
+]

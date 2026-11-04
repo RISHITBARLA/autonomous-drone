@@ -7,3 +7,10 @@ __pycache__/
 .idea/
 logs/*.log
 *.sqlite3
+captures/*.jpg
+captures/*.png
+captures/*.jpeg
+.pytest_cache/
+.coverage
+htmlcov/
+
