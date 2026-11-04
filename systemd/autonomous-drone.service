@@ -6,6 +6,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=drone
+SupplementaryGroups=dialout video
 WorkingDirectory=/home/drone/AUTONOMOUS-DRONE
 Environment="PATH=/home/drone/AUTONOMOUS-DRONE/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin"
 EnvironmentFile=/home/drone/AUTONOMOUS-DRONE/.env

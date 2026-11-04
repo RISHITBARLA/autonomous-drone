@@ -97,7 +97,7 @@ class Settings:
                 f"Invalid MAVLINK_TRANSPORT '{cls.MAVLINK_TRANSPORT}'. Must be one of {valid_transports}"
             )
         supported_modes = {
-            "STABILIZE", "ALT_HOLD", "LOITER", "GUIDED", "AUTO", "RTL", "LAND", "BRAKE", "POSHOLD"
+            "STABILIZE", "ALT_HOLD", "LOITER", "GUIDED", "AUTO", "RTL", "LAND", "BRAKE", "POSHOLD", "CIRCLE"
         }
         if cls.FLIGHT_MODE not in supported_modes:
             raise ValueError(

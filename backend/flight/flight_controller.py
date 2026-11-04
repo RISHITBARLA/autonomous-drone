@@ -30,7 +30,8 @@ SUPPORTED_FLIGHT_MODES = [
     "RTL",
     "LAND",
     "BRAKE",
-    "POSHOLD"
+    "POSHOLD",
+    "CIRCLE"
 ]
 
 

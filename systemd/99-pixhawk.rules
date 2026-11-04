@@ -1,0 +1,4 @@
+# Persistent device symlink for Pixhawk 2.4.8 USB connection
+# Vendor ID 26ac = 3D Robotics / PX4 / Pixhawk
+SUBSYSTEM=="tty", ATTRS{idVendor}=="26ac", SYMLINK+="pixhawk", MODE="0666", GROUP="dialout"
+SUBSYSTEM=="tty", ATTRS{idProduct}=="0011", SYMLINK+="pixhawk", MODE="0666", GROUP="dialout"
