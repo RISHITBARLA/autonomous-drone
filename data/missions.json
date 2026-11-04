@@ -44,7 +44,7 @@
     ],
     "geofence_id": null,
     "created_at": "2026-11-03T14:04:47.888752",
-    "updated_at": "2026-11-04T14:07:13.835465",
+    "updated_at": "2026-11-04T14:25:45.350122",
     "state_history": [
       {
         "timestamp": 1793694887.8887522,
@@ -88,7 +88,7 @@
     ],
     "geofence_id": null,
     "created_at": "2026-11-03T14:13:30.170019",
-    "updated_at": "2026-11-04T14:07:11.780607",
+    "updated_at": "2026-11-04T14:25:43.456184",
     "state_history": [
       {
         "timestamp": 1793695410.1700196,

@@ -276,11 +276,25 @@ class MAVLinkService:
             try:
                 # 1. Establish connection if not already open
                 if not self._mav_connection:
-                    logger.info("Attempting physical MAVLink connection to %s", self.connection_string)
+                    target_conn = self.connection_string
+                    # Auto-fallback if /dev/ttyACM0 re-enumerated to /dev/ttyACM1 or similar
+                    if str(target_conn).startswith("/dev/tty") and not os.path.exists(str(target_conn)):
+                        import glob
+                        dev_matches = sorted(glob.glob("/dev/ttyACM*") + glob.glob("/dev/ttyUSB*"))
+                        if dev_matches:
+                            logger.info(
+                                "Port %s not found; dynamically falling back to active port %s",
+                                target_conn, dev_matches[0]
+                            )
+                            target_conn = dev_matches[0]
+                            with self._lock:
+                                self._connection_string = target_conn
+
+                    logger.info("Attempting physical MAVLink connection to %s", target_conn)
                     try:
                         from pymavlink import mavutil
                         self._mav_connection = mavutil.mavlink_connection(
-                            self.connection_string,
+                            target_conn,
                             baud=self.baudrate,
                             autoreconnect=True,
                             timeout=2.0
