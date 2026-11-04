@@ -7,6 +7,8 @@ SAFETY CONSTRAINT:
 This module is strictly read-only. No flight control, arming, or movement commands are
 issued by this subsystem.
 """
+import os
+import glob
 import math
 import time
 import threading
