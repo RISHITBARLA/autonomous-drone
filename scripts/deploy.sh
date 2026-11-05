@@ -88,3 +88,4 @@ echo "  View live logs:    journalctl -u autonomous-drone -f"
 echo "  Restart service:   sudo systemctl restart autonomous-drone"
 echo "  Stop service:      sudo systemctl stop autonomous-drone"
 echo "=================================================================="
+
