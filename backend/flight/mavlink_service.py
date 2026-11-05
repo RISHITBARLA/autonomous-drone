@@ -39,6 +39,82 @@ COPTER_MODES = {
 ARDUCOPTER_MODE_IDS = {v: k for k, v in COPTER_MODES.items()}
 
 
+# MAVLink Autopilot identification mappings (MAV_AUTOPILOT enum)
+AUTOPILOT_NAME_MAP = {
+    0: "Generic",
+    1: "Reserved",
+    2: "SLUGS",
+    3: "ArduPilot",
+    4: "OpenPilot",
+    12: "PX4",
+    13: "SMACCMPilot",
+    14: "AutoQuad",
+    15: "Armazila",
+    16: "Aerob",
+    17: "ASLUAV",
+    18: "SmartAP",
+    19: "AirRails"
+}
+
+# MAVLink Vehicle Type identification mappings (MAV_TYPE enum)
+VEHICLE_TYPE_MAP = {
+    0: "Generic",
+    1: "Fixed Wing",
+    2: "Quadrotor",
+    3: "Coaxial",
+    4: "Helicopter",
+    10: "Ground Rover",
+    11: "Surface Boat",
+    12: "Submarine",
+    13: "Hexarotor",
+    14: "Octorotor",
+    15: "Tricopter",
+    16: "Flapping Wing",
+    17: "Kite",
+    19: "VTOL DuoRotor",
+    20: "VTOL Quadrotor",
+    21: "VTOL Tiltrotor",
+    29: "Dodecarotor",
+    35: "Decarotor",
+    43: "Multirotor"
+}
+
+
+def decode_heartbeat_identity(autopilot_id: Optional[int], type_id: Optional[int]) -> tuple:
+    """
+    Decodes MAVLink HEARTBEAT autopilot and vehicle type enums into human-readable strings.
+    Returns: (autopilot_name, vehicle_type_name, composite_display_string)
+    """
+    ap_id = autopilot_id if isinstance(autopilot_id, int) else 0
+    t_id = type_id if isinstance(type_id, int) else 0
+
+    ap_name = AUTOPILOT_NAME_MAP.get(ap_id, f"Autopilot-{ap_id}")
+    veh_name = VEHICLE_TYPE_MAP.get(t_id, f"Vehicle-{t_id}")
+
+    if ap_id == 3:  # ArduPilot
+        if t_id in (2, 3, 13, 14, 15, 29, 35, 43):
+            firmware_sub = "ArduCopter"
+        elif t_id in (1, 19, 20, 21):
+            firmware_sub = "ArduPlane"
+        elif t_id in (10, 11):
+            firmware_sub = "Rover"
+        elif t_id == 12:
+            firmware_sub = "ArduSub"
+        elif t_id == 4:
+            firmware_sub = "Heli"
+        else:
+            firmware_sub = veh_name
+        composite = f"ArduPilot {firmware_sub} ({veh_name})"
+    elif ap_id == 12:  # PX4
+        composite = f"PX4 ({veh_name})"
+    elif ap_id == 0 and t_id == 0:
+        composite = "Generic"
+    else:
+        composite = f"{ap_name} ({veh_name})"
+
+    return ap_name, veh_name, composite
+
+
 @dataclass
 class TelemetrySnapshot:
     """Thread-safe immutable representation of current vehicle telemetry state."""
@@ -263,8 +339,86 @@ class MAVLinkService:
                 self._battery_voltage = round(15.4 - (self._sim_step * 0.0002), 2)
                 self._battery_current = round(12.5 + 2.0 * math.sin(t), 1)
                 self._battery_percent = max(10, int(round((self._battery_voltage - 14.0) / (16.8 - 14.0) * 100)))
+                sim_lat = self._lat
+                sim_lon = self._lon
+                sim_alt = self._alt_rel
 
+            self._update_coverage_telemetry(sim_lat, sim_lon, sim_alt)
             time.sleep(0.1)  # 10 Hz telemetry rate
+
+    def _update_coverage_telemetry(self, lat: float, lon: float, alt: float) -> None:
+        """Safely route genuine GPS coordinates to coverage planner."""
+        if not (-90.0 <= lat <= 90.0) or not (-180.0 <= lon <= 180.0):
+            return
+        if lat == 0.0 and lon == 0.0:
+            return
+        try:
+            from backend.search.coverage_planner import coverage_planner
+            if coverage_planner is not None:
+                coverage_planner.update_drone_position(lat, lon, alt)
+        except Exception as e:
+            logger.debug("Coverage planner update skipped: %s", e)
+
+    def _handle_gps_raw_int(self, msg: Any) -> None:
+        """Process GPS_RAW_INT message and update coverage planner if fix is valid."""
+        try:
+            fix_type = getattr(msg, "fix_type", 0)
+            lat = getattr(msg, "lat", 0) / 1e7
+            lon = getattr(msg, "lon", 0) / 1e7
+            alt_m = getattr(msg, "alt", 0) / 1000.0
+
+            with self._lock:
+                self._gps_fix = fix_type
+                self._satellites = getattr(msg, "satellites_visible", 0)
+                self._hdop = round(getattr(msg, "eph", 9999) / 100.0, 2)
+                rel_alt = self._alt_rel
+
+            effective_alt = rel_alt if rel_alt > 0.5 else alt_m
+
+            if fix_type >= 2 and lat != 0.0 and lon != 0.0:
+                self._update_coverage_telemetry(lat, lon, effective_alt)
+        except Exception as e:
+            logger.debug("Error in _handle_gps_raw_int: %s", e)
+
+    def _handle_heartbeat(self, msg: Any, timestamp: Optional[float] = None) -> None:
+        """Process incoming MAVLink HEARTBEAT message and dynamically decode vehicle identity."""
+        raw_type = getattr(msg, "type", 0)
+        # Ignore companion GCS echo heartbeats
+        if raw_type == 6:  # MAV_TYPE_GCS
+            return
+
+        now = timestamp if timestamp is not None else time.time()
+        raw_ap = getattr(msg, "autopilot", 0)
+        ap_name, veh_name, composite_identity = decode_heartbeat_identity(raw_ap, raw_type)
+
+        with self._lock:
+            self._connected = True
+            self._last_heartbeat = now
+            try:
+                src_sys = msg.get_srcSystem() if callable(getattr(msg, "get_srcSystem", None)) else getattr(msg, "srcSystem", 1)
+                if isinstance(src_sys, int) and src_sys > 0:
+                    self._target_system = src_sys
+            except Exception:
+                pass
+
+            try:
+                src_comp = msg.get_srcComponent() if callable(getattr(msg, "get_srcComponent", None)) else getattr(msg, "srcComponent", 1)
+                if isinstance(src_comp, int) and src_comp > 0:
+                    self._target_component = src_comp
+            except Exception:
+                pass
+
+            custom_mode = getattr(msg, "custom_mode", 0)
+            if not isinstance(custom_mode, int):
+                custom_mode = 0
+            self._flight_mode = COPTER_MODES.get(custom_mode, f"MODE_{custom_mode}")
+            # Check base_mode armed bit (128 = MAV_MODE_FLAG_SAFETY_ARMED)
+            base_mode = getattr(msg, "base_mode", 0)
+            if not isinstance(base_mode, int):
+                base_mode = 0
+            self._armed = bool(base_mode & 128)
+            self._system_status = "ACTIVE" if self._armed else "STANDBY"
+            self._autopilot_type = composite_identity
 
     def _run_mavlink_stream(self) -> None:
         """Physical MAVLink connection receiver with automatic reconnect on failure."""
@@ -279,18 +433,26 @@ class MAVLinkService:
                 # 1. Establish connection if not already open
                 if not self._mav_connection:
                     target_conn = self.connection_string
-                    # Auto-fallback if /dev/ttyACM0 re-enumerated to /dev/ttyACM1 or similar
-                    if str(target_conn).startswith("/dev/tty") and not os.path.exists(str(target_conn)):
+                    # Dedicated Raspberry Pi GPIO UART ports (/dev/serial0, /dev/ttyAMA0) must NEVER fall back to USB
+                    is_uart = (
+                        str(target_conn) in ("/dev/serial0", "/dev/ttyAMA0")
+                        or str(target_conn).startswith(("/dev/serial", "/dev/ttyAMA"))
+                    )
+
+                    if is_uart:
+                        logger.debug("UART connection configured (%s); USB dynamic fallback is disabled.", target_conn)
+                    elif str(target_conn).startswith(("/dev/ttyACM", "/dev/ttyUSB")) and not os.path.exists(str(target_conn)):
+                        # Only allow USB re-enumeration fallback if configured device was already a USB port (/dev/ttyACM* or /dev/ttyUSB*)
                         import glob
                         dev_matches = sorted(glob.glob("/dev/ttyACM*") + glob.glob("/dev/ttyUSB*"))
                         if dev_matches:
                             logger.info(
-                                "Port %s not found; dynamically falling back to active port %s",
+                                "USB port %s not found; dynamically falling back to active USB port %s",
                                 target_conn, dev_matches[0]
                             )
                             target_conn = dev_matches[0]
                             with self._lock:
-                                self._connection_string = target_conn
+                                self.connection_string = target_conn
 
                     logger.info("Attempting physical MAVLink connection to %s", target_conn)
                     try:
@@ -332,22 +494,7 @@ class MAVLinkService:
                 now = time.time()
 
                 if msg_type == "HEARTBEAT":
-                    with self._lock:
-                        self._connected = True
-                        self._last_heartbeat = now
-                        src_sys = msg.get_srcSystem()
-                        src_comp = msg.get_srcComponent()
-                        if src_sys > 0:
-                            self._target_system = src_sys
-                        if src_comp > 0:
-                            self._target_component = src_comp
-                        custom_mode = getattr(msg, "custom_mode", 0)
-                        self._flight_mode = COPTER_MODES.get(custom_mode, f"MODE_{custom_mode}")
-                        # Check base_mode armed bit (128 = MAV_MODE_FLAG_SAFETY_ARMED)
-                        base_mode = getattr(msg, "base_mode", 0)
-                        self._armed = bool(base_mode & 128)
-                        self._system_status = "ACTIVE" if self._armed else "STANDBY"
-                        self._autopilot_type = "ArduPilot ArduCopter"
+                    self._handle_heartbeat(msg, now)
 
                     if not requested_streams:
                         try:
@@ -402,12 +549,13 @@ class MAVLinkService:
                         self._alt_rel = round(msg.relative_alt / 1000.0, 2)
                         self._alt_msl = round(msg.alt / 1000.0, 2)
                         self._heading = round(msg.hdg / 100.0, 1)
+                        g_lat = self._lat
+                        g_lon = self._lon
+                        g_alt = self._alt_rel if self._alt_rel > 0.5 else 10.0
+                    self._update_coverage_telemetry(g_lat, g_lon, g_alt)
 
                 elif msg_type == "GPS_RAW_INT":
-                    with self._lock:
-                        self._gps_fix = getattr(msg, "fix_type", 0)
-                        self._satellites = getattr(msg, "satellites_visible", 0)
-                        self._hdop = round(getattr(msg, "eph", 9999) / 100.0, 2)
+                    self._handle_gps_raw_int(msg)
 
                 elif msg_type == "VFR_HUD":
                     with self._lock:
@@ -435,6 +583,12 @@ class MAVLinkService:
                 logger.error("Error receiving MAVLink packet: %s", e)
                 with self._lock:
                     self._connected = False
+                if self._mav_connection:
+                    try:
+                        self._mav_connection.close()
+                    except Exception:
+                        pass
+                    self._mav_connection = None
                 time.sleep(1.0)
 
     def get_snapshot(self) -> TelemetrySnapshot:

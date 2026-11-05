@@ -18,6 +18,13 @@ class DroneDashboard {
     this.geofenceConfig = null;
     this.activeMission = null;
 
+    // Visualizer Mode & History
+    this.mapMode = 'normal'; // 'normal' | 'heatmap'
+    this.coverageData = null;
+    this.flightPathHistory = []; // Ring buffer up to 300 points
+    this.maxBreadcrumbs = 300;
+    this.lastCoverageFetch = 0;
+
     this.initElements();
     this.bindEvents();
     this.start();
@@ -170,7 +177,9 @@ class DroneDashboard {
     // Flight Control & AltHold Elements
     this.fcConnDot = document.getElementById('fcConnDot');
     this.fcHardwareModeBadge = document.getElementById('fcHardwareModeBadge');
+    this.fcMavlinkConnBadge = document.getElementById('fcMavlinkConnBadge');
     this.fcHeartbeatBadge = document.getElementById('fcHeartbeatBadge');
+    this.fcCurrentModeBadge = document.getElementById('fcCurrentModeBadge');
     this.fcArmedBadge = document.getElementById('fcArmedBadge');
     this.fcDisabledNotice = document.getElementById('fcDisabledNotice');
     this.fcStaleNotice = document.getElementById('fcStaleNotice');
@@ -187,6 +196,9 @@ class DroneDashboard {
     this.fcCommandFeedback = document.getElementById('fcCommandFeedback');
     this.fcCommandFeedbackText = document.getElementById('fcCommandFeedbackText');
     this.fcCommandFeedbackTime = document.getElementById('fcCommandFeedbackTime');
+    this.fcLastCmdName = document.getElementById('fcLastCmdName');
+    this.fcLastCmdResult = document.getElementById('fcLastCmdResult');
+    this.fcLastCmdTime = document.getElementById('fcLastCmdTime');
 
     // Arming Confirmation Modal
     this.armConfirmModal = document.getElementById('armConfirmModal');
@@ -198,9 +210,25 @@ class DroneDashboard {
     this.modalHwType = document.getElementById('modalHwType');
     this.modalPrearmState = document.getElementById('modalPrearmState');
 
+    // Disarming Confirmation Modal
+    this.disarmConfirmModal = document.getElementById('disarmConfirmModal');
+    this.btnCloseDisarmModal = document.getElementById('btnCloseDisarmModal');
+    this.btnCancelDisarmModal = document.getElementById('btnCancelDisarmModal');
+    this.btnExecuteDisarmModal = document.getElementById('btnExecuteDisarmModal');
+    this.chkDisarmSafetyConfirm = document.getElementById('chkDisarmSafetyConfirm');
+    this.modalDisarmMode = document.getElementById('modalDisarmMode');
+    this.modalDisarmArmedState = document.getElementById('modalDisarmArmedState');
+    this.modalDisarmConnState = document.getElementById('modalDisarmConnState');
+
+    this._flightCommandPending = false;
+
     // Geofence Elements
     this.geofenceSafetyBadge = document.getElementById('geofenceSafetyBadge');
     this.geofenceCanvas = document.getElementById('geofenceCanvas');
+    this.btnMapNormal = document.getElementById('btnMapNormal');
+    this.btnMapHeatmap = document.getElementById('btnMapHeatmap');
+    this.mapLegendNormal = document.getElementById('mapLegendNormal');
+    this.mapLegendHeatmap = document.getElementById('mapLegendHeatmap');
     this.fenceTypeSelect = document.getElementById('fenceTypeSelect');
     this.fenceCenterLat = document.getElementById('fenceCenterLat');
     this.fenceCenterLon = document.getElementById('fenceCenterLon');
@@ -344,11 +372,37 @@ class DroneDashboard {
     }
 
     if (this.btnDisarmDrone) {
-      this.btnDisarmDrone.addEventListener('click', () => this.executeDisarm());
+      this.btnDisarmDrone.addEventListener('click', () => this.openDisarmModal());
+    }
+
+    if (this.btnCloseDisarmModal) {
+      this.btnCloseDisarmModal.addEventListener('click', () => this.closeDisarmModal());
+    }
+
+    if (this.btnCancelDisarmModal) {
+      this.btnCancelDisarmModal.addEventListener('click', () => this.closeDisarmModal());
+    }
+
+    if (this.chkDisarmSafetyConfirm && this.btnExecuteDisarmModal) {
+      this.chkDisarmSafetyConfirm.addEventListener('change', () => {
+        this.btnExecuteDisarmModal.disabled = !this.chkDisarmSafetyConfirm.checked;
+      });
+    }
+
+    if (this.btnExecuteDisarmModal) {
+      this.btnExecuteDisarmModal.addEventListener('click', () => this.executeDisarm());
     }
 
     if (this.btnEmergencyRTL) {
       this.btnEmergencyRTL.addEventListener('click', () => this.setFlightMode('RTL'));
+    }
+
+    // Map Mode Toggle
+    if (this.btnMapNormal) {
+      this.btnMapNormal.addEventListener('click', () => this.setMapMode('normal'));
+    }
+    if (this.btnMapHeatmap) {
+      this.btnMapHeatmap.addEventListener('click', () => this.setMapMode('heatmap'));
     }
   }
 
@@ -384,6 +438,9 @@ class DroneDashboard {
     }
 
     if (tabName === 'geofence') {
+      if (this.mapMode === 'heatmap') {
+        this.fetchCoverage();
+      }
       this.renderGeofenceCanvas();
     }
   }
@@ -401,6 +458,12 @@ class DroneDashboard {
         this.fetchQRStatus();
       }
       if (this.activeTab === 'geofence') {
+        if (this.mapMode === 'heatmap') {
+          const now = Date.now();
+          if (now - this.lastCoverageFetch > 3000) {
+            this.fetchCoverage();
+          }
+        }
         this.renderGeofenceCanvas();
       }
     }, this.pollInterval);
@@ -416,6 +479,7 @@ class DroneDashboard {
     this.fetchQRStatus();
     this.fetchMissions();
     this.fetchGeofence();
+    this.fetchCoverage();
     this.fetchCapturesList();
   }
 
@@ -525,6 +589,10 @@ class DroneDashboard {
       if (json.status === 'success' && json.data) {
         this.currentTelemetry = json.data;
         this.updateTelemetryUI(json.data);
+        if (json.data.connected && json.data.latitude && json.data.longitude &&
+            (json.data.latitude !== 0.0 || json.data.longitude !== 0.0)) {
+          this.recordBreadcrumb(json.data.latitude, json.data.longitude, json.data.altitude_relative_m);
+        }
       }
     } catch (err) {
       console.error('Error fetching telemetry:', err);
@@ -555,8 +623,8 @@ class DroneDashboard {
     if (this.telemPitch) this.telemPitch.textContent = `${t.pitch_deg}°`;
     if (this.telemYaw) this.telemYaw.textContent = `${t.yaw_deg}°`;
 
-    if (this.telemLat) this.telemLat.textContent = t.latitude.toFixed(6);
-    if (this.telemLon) this.telemLon.textContent = t.longitude.toFixed(6);
+    if (this.telemLat) this.telemLat.textContent = (typeof t.latitude === 'number' && Number.isFinite(t.latitude)) ? t.latitude.toFixed(6) : '--';
+    if (this.telemLon) this.telemLon.textContent = (typeof t.longitude === 'number' && Number.isFinite(t.longitude)) ? t.longitude.toFixed(6) : '--';
     if (this.telemAltRel) this.telemAltRel.textContent = `${t.altitude_relative_m} m`;
     if (this.telemAltMsl) this.telemAltMsl.textContent = `${t.altitude_msl_m} m`;
     if (this.telemSats) this.telemSats.textContent = t.satellites_visible;
@@ -621,18 +689,32 @@ class DroneDashboard {
     // 2. Hardware Mode Badge: physical vs simulation
     if (this.fcHardwareModeBadge) {
       if (d.is_simulated) {
-        this.fcHardwareModeBadge.textContent = 'SIMULATED VIRTUAL';
-        this.fcHardwareModeBadge.className = 'card-badge badge-hardware-sim';
+        this.fcHardwareModeBadge.textContent = 'SIMULATION';
+        this.fcHardwareModeBadge.className = 'card-badge highlight';
       } else {
-        this.fcHardwareModeBadge.textContent = 'PHYSICAL HARDWARE';
-        this.fcHardwareModeBadge.className = 'card-badge badge-hardware-phys';
+        this.fcHardwareModeBadge.textContent = 'PHYSICAL HARDWARE (PIXHAWK)';
+        this.fcHardwareModeBadge.className = 'card-badge normal';
       }
     }
 
-    // 3. Heartbeat & Connection Dot
+    // 3. Heartbeat & Connection Dot & MAVLink Conn Badge
     const isConn = d.connected;
     const isStale = d.is_stale;
     const hbAge = d.heartbeat_age_seconds !== undefined ? Number(d.heartbeat_age_seconds).toFixed(1) : '--';
+
+    if (this.fcMavlinkConnBadge) {
+      if (isConn) {
+        this.fcMavlinkConnBadge.textContent = 'MAVLINK: CONNECTED';
+        this.fcMavlinkConnBadge.className = 'card-badge normal';
+      } else {
+        this.fcMavlinkConnBadge.textContent = 'MAVLINK: DISCONNECTED';
+        this.fcMavlinkConnBadge.className = 'card-badge';
+      }
+    }
+
+    if (this.fcCurrentModeBadge) {
+      this.fcCurrentModeBadge.textContent = `MODE: ${d.flight_mode || '--'}`;
+    }
 
     if (this.fcStaleNotice) {
       if (isStale && isConn) {
@@ -658,7 +740,7 @@ class DroneDashboard {
         this.fcHeartbeatBadge.className = 'card-badge';
       } else if (isStale) {
         this.fcHeartbeatBadge.textContent = `STALE (${hbAge}s)`;
-        this.fcHeartbeatBadge.className = 'card-badge';
+        this.fcHeartbeatBadge.className = 'card-badge highlight';
       } else {
         this.fcHeartbeatBadge.textContent = `HB: ${hbAge}s`;
         this.fcHeartbeatBadge.className = 'card-badge normal';
@@ -671,27 +753,39 @@ class DroneDashboard {
       this.fcArmedBadge.className = d.armed ? 'card-badge highlight' : 'card-badge normal';
     }
 
-    // ARM button rules:
-    // - Disabled when flight control is disabled
-    // - Disabled when heartbeat is missing or stale
-    // - Disabled when vehicle is already armed
-    if (this.btnOpenArmModal) {
-      const armAllowed = d.flight_control_enabled && isConn && !isStale && !d.armed;
-      this.btnOpenArmModal.disabled = !armAllowed;
-      if (!d.flight_control_enabled) {
-        this.btnOpenArmModal.title = 'Flight control is disabled in settings (FLIGHT_CONTROL_ENABLED=false)';
-      } else if (!isConn || isStale) {
-        this.btnOpenArmModal.title = 'No active/fresh MAVLink heartbeat from Pixhawk';
-      } else if (d.armed) {
-        this.btnOpenArmModal.title = 'Vehicle is already armed';
-      } else {
-        this.btnOpenArmModal.title = 'Click to open confirmation modal and arm vehicle in selected mode';
+    // ARM & DISARM button rules:
+    // Concurrency lock: disable both if command is pending
+    if (this._flightCommandPending) {
+      if (this.btnOpenArmModal) this.btnOpenArmModal.disabled = true;
+      if (this.btnDisarmDrone) this.btnDisarmDrone.disabled = true;
+    } else {
+      if (this.btnOpenArmModal) {
+        const armAllowed = d.flight_control_enabled && isConn && !isStale && !d.armed;
+        this.btnOpenArmModal.disabled = !armAllowed;
+        if (!d.flight_control_enabled) {
+          this.btnOpenArmModal.title = 'Flight control is disabled in settings (FLIGHT_CONTROL_ENABLED=false)';
+        } else if (!isConn || isStale) {
+          this.btnOpenArmModal.title = 'No active/fresh MAVLink heartbeat from Pixhawk';
+        } else if (d.armed) {
+          this.btnOpenArmModal.title = 'Vehicle is already armed';
+        } else {
+          this.btnOpenArmModal.title = 'Click to open confirmation modal and arm vehicle in selected mode';
+        }
       }
-    }
 
-    // DISARM button rules:
-    if (this.btnDisarmDrone) {
-      this.btnDisarmDrone.disabled = !d.flight_control_enabled || !isConn || !d.armed;
+      if (this.btnDisarmDrone) {
+        const disarmAllowed = d.flight_control_enabled && isConn && d.armed;
+        this.btnDisarmDrone.disabled = !disarmAllowed;
+        if (!d.flight_control_enabled) {
+          this.btnDisarmDrone.title = 'Flight control is disabled in settings (FLIGHT_CONTROL_ENABLED=false)';
+        } else if (!isConn) {
+          this.btnDisarmDrone.title = 'Flight controller not connected';
+        } else if (!d.armed) {
+          this.btnDisarmDrone.title = 'Vehicle is already disarmed';
+        } else {
+          this.btnDisarmDrone.title = 'Click to open confirmation modal and disarm motor outputs';
+        }
+      }
     }
 
     // Mode select synchronization
@@ -736,6 +830,20 @@ class DroneDashboard {
     if (this.mavlinkConnInput && !this._mavlinkInputFocused && d.connection_string) {
       this.mavlinkConnInput.value = d.connection_string;
     }
+
+    // 7. Last Command Audit Display
+    if (d.last_command) {
+      if (this.fcLastCmdName) this.fcLastCmdName.textContent = d.last_command.command || '--';
+      if (this.fcLastCmdResult) {
+        const ok = d.last_command.success;
+        this.fcLastCmdResult.textContent = ok ? 'SUCCESS' : 'REJECTED';
+        this.fcLastCmdResult.style.color = ok ? 'var(--accent-green)' : 'var(--accent-red)';
+      }
+      if (this.fcLastCmdTime && d.last_command.timestamp) {
+        const t = new Date(d.last_command.timestamp * 1000);
+        this.fcLastCmdTime.textContent = t.toTimeString().split(' ')[0];
+      }
+    }
   }
 
   async setFlightMode(targetMode) {
@@ -768,7 +876,7 @@ class DroneDashboard {
     const selectedMode = this.fcModeSelect ? this.fcModeSelect.value : 'ALT_HOLD';
     if (this.modalTargetMode) this.modalTargetMode.textContent = selectedMode;
     if (this.modalHwType) {
-      const isSim = this.fcHardwareModeBadge && this.fcHardwareModeBadge.textContent.includes('SIMULATED');
+      const isSim = this.fcHardwareModeBadge && this.fcHardwareModeBadge.textContent.includes('SIMULATION');
       this.modalHwType.textContent = isSim ? 'Simulated Virtual' : 'Physical Pixhawk 2.4.8 Hardware';
     }
     if (this.modalPrearmState) {
@@ -783,52 +891,155 @@ class DroneDashboard {
     if (this.armConfirmModal) this.armConfirmModal.classList.add('hidden');
   }
 
+  openDisarmModal() {
+    if (!this.disarmConfirmModal) return;
+    const currentMode = this.fcModeSelect ? this.fcModeSelect.value : 'ALT_HOLD';
+    if (this.modalDisarmMode) this.modalDisarmMode.textContent = currentMode;
+    if (this.modalDisarmArmedState) this.modalDisarmArmedState.textContent = 'ARMED';
+    if (this.modalDisarmConnState) {
+      const isSim = this.fcHardwareModeBadge && this.fcHardwareModeBadge.textContent.includes('SIMULATION');
+      this.modalDisarmConnState.textContent = isSim ? 'Simulated Virtual' : 'Physical Pixhawk Hardware';
+    }
+    if (this.chkDisarmSafetyConfirm) this.chkDisarmSafetyConfirm.checked = false;
+    if (this.btnExecuteDisarmModal) this.btnExecuteDisarmModal.disabled = true;
+    this.disarmConfirmModal.classList.remove('hidden');
+  }
+
+  closeDisarmModal() {
+    if (this.disarmConfirmModal) this.disarmConfirmModal.classList.add('hidden');
+  }
+
   async executeArm() {
+    if (this._flightCommandPending) return;
+    this._flightCommandPending = true;
     this.closeArmModal();
+    if (this.btnOpenArmModal) this.btnOpenArmModal.disabled = true;
+    if (this.btnDisarmDrone) this.btnDisarmDrone.disabled = true;
+
     const mode = this.fcModeSelect ? this.fcModeSelect.value : 'ALT_HOLD';
-    this.updateCommandFeedback(`ARM command sent to Pixhawk (${mode}). Evaluating pre-arm checks...`, 'pending');
+    this.updateCommandFeedback(`ARM command sent to Pixhawk (${mode}). Evaluating pre-arm checks & awaiting heartbeat...`, 'pending');
+
     try {
       const res = await fetch('/api/flight/arm', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ confirm: true })
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Operator-Action': 'ARM'
+        },
+        body: JSON.stringify({
+          confirm: true,
+          operator: 'GCS-OPERATOR',
+          operator_action: 'EXPLICIT_ARM'
+        })
       });
+
       const json = await res.json();
-      if (res.ok && json.status === 'success') {
-        this.updateCommandFeedback(`Vehicle ARMED successfully in ${mode}`, 'accepted');
-        this.log(`Vehicle ARMED in ${mode}`, 'success');
-        this.fetchFlightStatus();
-      } else {
+      if (!res.ok || json.status !== 'success') {
         const errMsg = json.message || 'Arming rejected by Pixhawk firmware';
         this.updateCommandFeedback(`Arming REJECTED: ${errMsg}`, 'rejected');
         this.log(`Arming REJECTED: ${errMsg}`, 'error');
+        return;
+      }
+
+      // Requirement: Never display success merely because an HTTP request succeeded.
+      // Verify actual Pixhawk HEARTBEAT state.
+      this.updateCommandFeedback('Command accepted by backend. Verifying Pixhawk HEARTBEAT armed flag...', 'pending');
+      let verifiedArmed = false;
+      for (let attempt = 0; attempt < 8; attempt++) {
+        await new Promise(r => setTimeout(r, 500));
+        const statusRes = await fetch('/api/flight/status');
+        if (statusRes.ok) {
+          const statusJson = await statusRes.json();
+          if (statusJson.data) {
+            this.updateFlightUI(statusJson.data);
+            if (statusJson.data.armed === true) {
+              verifiedArmed = true;
+              break;
+            }
+          }
+        }
+      }
+
+      if (verifiedArmed) {
+        this.updateCommandFeedback(`Pixhawk confirmed ARMED via heartbeat in ${mode}`, 'accepted');
+        this.log(`Pixhawk confirmed ARMED via heartbeat in ${mode}`, 'success');
+      } else {
+        const latestErr = (json.data && json.data.message) || 'Heartbeat armed bit not confirmed within timeout. Verify safety switch and pre-arm checks.';
+        this.updateCommandFeedback(`Arming unconfirmed: ${latestErr}`, 'rejected');
+        this.log(`Arming unconfirmed: ${latestErr}`, 'error');
       }
     } catch (err) {
       this.updateCommandFeedback(`Network error during ARM request: ${err.message}`, 'rejected');
       this.log(`Arming network error: ${err.message}`, 'error');
+    } finally {
+      this._flightCommandPending = false;
+      await this.fetchFlightStatus();
     }
   }
 
   async executeDisarm() {
-    this.updateCommandFeedback('DISARM command sent to Pixhawk...', 'pending');
+    if (this._flightCommandPending) return;
+    this._flightCommandPending = true;
+    this.closeDisarmModal();
+    if (this.btnOpenArmModal) this.btnOpenArmModal.disabled = true;
+    if (this.btnDisarmDrone) this.btnDisarmDrone.disabled = true;
+
+    this.updateCommandFeedback('DISARM command sent to Pixhawk... awaiting heartbeat confirmation...', 'pending');
+
     try {
       const res = await fetch('/api/flight/disarm', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' }
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Operator-Action': 'DISARM'
+        },
+        body: JSON.stringify({
+          confirm: true,
+          operator: 'GCS-OPERATOR',
+          operator_action: 'EXPLICIT_DISARM'
+        })
       });
+
       const json = await res.json();
-      if (res.ok && json.status === 'success') {
-        this.updateCommandFeedback('Vehicle DISARMED successfully', 'accepted');
-        this.log('Vehicle DISARMED', 'info');
-        this.fetchFlightStatus();
-      } else {
-        const errMsg = json.message || 'Disarm rejected';
+      if (!res.ok || json.status !== 'success') {
+        const errMsg = json.message || 'Disarm rejected by Pixhawk';
         this.updateCommandFeedback(`Disarm failed: ${errMsg}`, 'rejected');
         this.log(`Disarm failed: ${errMsg}`, 'error');
+        return;
+      }
+
+      // Requirement: Never display success merely because an HTTP request succeeded.
+      // Verify actual Pixhawk HEARTBEAT state.
+      this.updateCommandFeedback('Command accepted by backend. Verifying Pixhawk HEARTBEAT disarmed flag...', 'pending');
+      let verifiedDisarmed = false;
+      for (let attempt = 0; attempt < 8; attempt++) {
+        await new Promise(r => setTimeout(r, 500));
+        const statusRes = await fetch('/api/flight/status');
+        if (statusRes.ok) {
+          const statusJson = await statusRes.json();
+          if (statusJson.data) {
+            this.updateFlightUI(statusJson.data);
+            if (statusJson.data.armed === false) {
+              verifiedDisarmed = true;
+              break;
+            }
+          }
+        }
+      }
+
+      if (verifiedDisarmed) {
+        this.updateCommandFeedback('Pixhawk confirmed DISARMED via heartbeat', 'accepted');
+        this.log('Pixhawk confirmed DISARMED via heartbeat', 'info');
+      } else {
+        this.updateCommandFeedback('Disarm unconfirmed: Heartbeat still reports armed state.', 'rejected');
+        this.log('Disarm unconfirmed: Heartbeat still reports armed', 'error');
       }
     } catch (err) {
       this.updateCommandFeedback(`Network error during DISARM: ${err.message}`, 'rejected');
       this.log(`Disarm network error: ${err.message}`, 'error');
+    } finally {
+      this._flightCommandPending = false;
+      await this.fetchFlightStatus();
     }
   }
 
@@ -1395,12 +1606,117 @@ class DroneDashboard {
     }
   }
 
+  // -------------------------------------------------------------
+  // Map Visualizer: Mode Control & Data Fetching
+  // -------------------------------------------------------------
+  setMapMode(mode) {
+    if (this.mapMode === mode) return;
+    this.mapMode = mode;
+
+    if (this.btnMapNormal) this.btnMapNormal.classList.toggle('active', mode === 'normal');
+    if (this.btnMapHeatmap) this.btnMapHeatmap.classList.toggle('active', mode === 'heatmap');
+
+    if (this.mapLegendNormal) this.mapLegendNormal.style.display = (mode === 'normal') ? 'flex' : 'none';
+    if (this.mapLegendHeatmap) this.mapLegendHeatmap.style.display = (mode === 'heatmap') ? 'flex' : 'none';
+
+    if (mode === 'heatmap') {
+      this.fetchCoverage();
+    }
+    this.renderGeofenceCanvas();
+  }
+
+  isValidGeoCoord(lat, lon) {
+    return typeof lat === 'number' && typeof lon === 'number' &&
+      Number.isFinite(lat) && Number.isFinite(lon) &&
+      !Number.isNaN(lat) && !Number.isNaN(lon) &&
+      lat >= -90.0 && lat <= 90.0 &&
+      lon >= -180.0 && lon <= 180.0 &&
+      !(lat === 0.0 && lon === 0.0);
+  }
+
+  recordBreadcrumb(lat, lon, alt) {
+    if (!this.isValidGeoCoord(lat, lon)) return;
+    const last = this.flightPathHistory[this.flightPathHistory.length - 1];
+    if (last) {
+      const dLat = (lat - last.lat) * 110540;
+      const dLon = (lon - last.lon) * 111320 * Math.cos(lat * Math.PI / 180);
+      if (Math.hypot(dLat, dLon) < 0.4) return;
+    }
+    const safeAlt = (typeof alt === 'number' && Number.isFinite(alt)) ? alt : 0.0;
+    this.flightPathHistory.push({ lat, lon, alt: safeAlt, t: Date.now() });
+    if (this.flightPathHistory.length > this.maxBreadcrumbs) {
+      this.flightPathHistory.shift();
+    }
+  }
+
+  async fetchCoverage() {
+    try {
+      const res = await fetch('/api/geofence/coverage');
+      if (!res.ok) return;
+      const json = await res.json();
+      const data = json.data || json;
+      if (data.status === 'success' || data.total_area_m2 !== undefined) {
+        this.coverageData = data;
+        this.lastCoverageFetch = Date.now();
+        if (this.activeTab === 'geofence' && this.mapMode === 'heatmap') {
+          this.renderGeofenceCanvas();
+        }
+      }
+    } catch (err) {
+      console.warn('Coverage API offline or unreachable:', err);
+    }
+  }
+
+  getThermalColor(intensity, alpha = 0.5) {
+    const val = Math.max(0, Math.min(1, intensity));
+    let r, g, b;
+    if (val < 0.25) {
+      const t = val / 0.25;
+      r = 0;
+      g = Math.round(100 + 129 * t);
+      b = 255;
+    } else if (val < 0.5) {
+      const t = (val - 0.25) / 0.25;
+      r = 0;
+      g = Math.round(229 + 1 * t);
+      b = Math.round(255 * (1 - t) + 118 * t);
+    } else if (val < 0.75) {
+      const t = (val - 0.5) / 0.25;
+      r = Math.round(255 * t);
+      g = Math.round(230 - 59 * t);
+      b = Math.round(118 * (1 - t));
+    } else {
+      const t = (val - 0.75) / 0.25;
+      r = 255;
+      g = Math.round(171 * (1 - t) + 23 * t);
+      b = Math.round(68 * t);
+    }
+    return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+  }
+
+  drawRoundedRect(ctx, x, y, width, height, radius) {
+    ctx.beginPath();
+    ctx.moveTo(x + radius, y);
+    ctx.lineTo(x + width - radius, y);
+    ctx.quadraticCurveTo(x + width, y, x + width, y + radius);
+    ctx.lineTo(x + width, y + height - radius);
+    ctx.quadraticCurveTo(x + width, y + height, x + width - radius, y + height);
+    ctx.lineTo(x + radius, y + height);
+    ctx.quadraticCurveTo(x, y + height, x, y + height - radius);
+    ctx.lineTo(x, y + radius);
+    ctx.quadraticCurveTo(x, y, x + radius, y);
+    ctx.closePath();
+  }
+
+  // -------------------------------------------------------------
+  // Overhauled 2D Canvas Visualizer (Normal & Heatmap)
+  // -------------------------------------------------------------
   renderGeofenceCanvas() {
-    if (!this.geofenceCanvas || !this.geofenceConfig) return;
+    if (!this.geofenceCanvas) return;
     const canvas = this.geofenceCanvas;
     const ctx = canvas.getContext('2d');
 
-    // Handle high DPI
+    // Handle high DPI container sizing
     const width = canvas.parentElement.clientWidth || 400;
     const height = canvas.parentElement.clientHeight || 350;
     if (canvas.width !== width || canvas.height !== height) {
@@ -1413,7 +1729,7 @@ class DroneDashboard {
     const cy = height / 2;
 
     // Draw Radar rings
-    ctx.strokeStyle = 'rgba(0, 229, 255, 0.15)';
+    ctx.strokeStyle = 'rgba(0, 229, 255, 0.12)';
     ctx.lineWidth = 1;
     for (let r = 40; r < Math.min(width, height) / 2; r += 40) {
       ctx.beginPath();
@@ -1421,7 +1737,7 @@ class DroneDashboard {
       ctx.stroke();
     }
 
-    // Radar axes
+    // Radar crosshairs
     ctx.beginPath();
     ctx.moveTo(cx, 10);
     ctx.lineTo(cx, height - 10);
@@ -1429,98 +1745,461 @@ class DroneDashboard {
     ctx.lineTo(width - 10, cy);
     ctx.stroke();
 
-    // Scale factor: radius maps to ~70% of canvas half-size
-    const maxR = Math.min(width, height) * 0.38;
-    const fenceRadiusM = this.geofenceConfig.circle_radius_m || 250;
-    const scale = maxR / fenceRadiusM;
+    // Default configuration fallbacks if backend geofence not loaded yet
+    const config = this.geofenceConfig || {
+      fence_type: 'circular',
+      circle_center_lat: 37.4093,
+      circle_center_lon: -122.0641,
+      circle_radius_m: 250
+    };
 
-    // Draw Geofence Boundary (Yellow)
+    const centerLat = config.circle_center_lat || 37.4093;
+    const centerLon = config.circle_center_lon || -122.0641;
+    let fenceRadiusM = config.circle_radius_m || 250;
+
+    // In polygon mode, calculate bounding radius to scale canvas properly
+    if (config.fence_type !== 'circular' && config.polygon_vertices && config.polygon_vertices.length > 2) {
+      let maxDist = 50;
+      config.polygon_vertices.forEach(p => {
+        const dx = (p.lon - centerLon) * 111320 * Math.cos(centerLat * Math.PI / 180);
+        const dy = -(p.lat - centerLat) * 110540;
+        const d = Math.hypot(dx, dy);
+        if (d > maxDist) maxDist = d;
+      });
+      fenceRadiusM = maxDist * 1.15;
+    }
+
+    const maxR = Math.min(width, height) * 0.38;
+    const scale = maxR / Math.max(50, fenceRadiusM);
+
+    const toCanvasCoords = (lat, lon) => {
+      if (typeof lat !== 'number' || typeof lon !== 'number' ||
+          !Number.isFinite(lat) || !Number.isFinite(lon) ||
+          Number.isNaN(lat) || Number.isNaN(lon)) {
+        return null;
+      }
+      const dx = (lon - centerLon) * 111320 * Math.cos(centerLat * Math.PI / 180) * scale;
+      const dy = -(lat - centerLat) * 110540 * scale;
+      if (!Number.isFinite(dx) || !Number.isFinite(dy)) {
+        return null;
+      }
+      return { px: cx + dx, py: cy + dy };
+    };
+
+    // ==========================================
+    // RENDER MODE: HEATMAP
+    // ==========================================
+    if (this.mapMode === 'heatmap') {
+      // 1. Draw Muted Geofence Boundary
+      ctx.strokeStyle = 'rgba(255, 235, 59, 0.4)';
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([4, 4]);
+      if (config.fence_type === 'circular') {
+        ctx.beginPath();
+        ctx.arc(cx, cy, (config.circle_radius_m || 250) * scale, 0, Math.PI * 2);
+        ctx.stroke();
+      } else if (config.polygon_vertices && config.polygon_vertices.length > 2) {
+        ctx.beginPath();
+        let firstDrawn = false;
+        config.polygon_vertices.forEach((p) => {
+          const pt = toCanvasCoords(p.lat, p.lon);
+          if (!pt) return;
+          if (!firstDrawn) {
+            ctx.moveTo(pt.px, pt.py);
+            firstDrawn = true;
+          } else {
+            ctx.lineTo(pt.px, pt.py);
+          }
+        });
+        if (firstDrawn) {
+          ctx.closePath();
+          ctx.stroke();
+        }
+      }
+      ctx.setLineDash([]);
+
+      // 2. Render Discretized Coverage Grid Cells with Thermal Gradient
+      const cov = this.coverageData;
+      if (cov && Array.isArray(cov.scanned_points) && cov.scanned_points.length > 0) {
+        cov.scanned_points.forEach(p => {
+          const pt = toCanvasCoords(p.lat, p.lon);
+          if (!pt) return;
+          const intensity = (typeof p.intensity === 'number' && Number.isFinite(p.intensity)) ? p.intensity : 0.6;
+          const cellRadius = Math.max(3, ((typeof p.radius_m === 'number' && Number.isFinite(p.radius_m)) ? p.radius_m : 2.4) * scale);
+          if (!Number.isFinite(cellRadius)) return;
+
+          const grad = ctx.createRadialGradient(pt.px, pt.py, 0, pt.px, pt.py, cellRadius);
+          grad.addColorStop(0, this.getThermalColor(intensity, 0.7));
+          grad.addColorStop(0.7, this.getThermalColor(intensity, 0.4));
+          grad.addColorStop(1, this.getThermalColor(intensity, 0.0));
+
+          ctx.fillStyle = grad;
+          ctx.beginPath();
+          ctx.arc(pt.px, pt.py, cellRadius, 0, Math.PI * 2);
+          ctx.fill();
+        });
+      }
+
+      // 3. Render Vision Observation Intensity Hotspots (Target / QR detections)
+      if (cov && Array.isArray(cov.observations)) {
+        cov.observations.forEach(obs => {
+          const pt = toCanvasCoords(obs.lat, obs.lon);
+          if (!pt) return;
+          ctx.fillStyle = 'rgba(255, 23, 68, 0.3)';
+          ctx.beginPath();
+          ctx.arc(pt.px, pt.py, 12, 0, Math.PI * 2);
+          ctx.fill();
+
+          ctx.fillStyle = '#ff1744';
+          ctx.beginPath();
+          ctx.arc(pt.px, pt.py, 5, 0, Math.PI * 2);
+          ctx.fill();
+
+          ctx.fillStyle = '#ffffff';
+          ctx.font = 'bold 9px JetBrains Mono, monospace';
+          ctx.fillText(obs.label || 'TARGET', pt.px + 8, pt.py - 4);
+        });
+      }
+
+      // 4. Real-time Drone Marker in Heatmap Mode
+      const telem = this.currentTelemetry;
+      const hasValidTelemCoord = telem && this.isValidGeoCoord(telem.latitude, telem.longitude);
+      if (telem && telem.connected && telem.gps_fix_type >= 2 && hasValidTelemCoord) {
+        const dronePt = toCanvasCoords(telem.latitude, telem.longitude);
+        if (dronePt) {
+          ctx.fillStyle = 'rgba(0, 229, 255, 0.3)';
+          ctx.beginPath();
+          ctx.arc(dronePt.px, dronePt.py, 9, 0, Math.PI * 2);
+          ctx.fill();
+
+          ctx.fillStyle = '#00e5ff';
+          ctx.beginPath();
+          ctx.arc(dronePt.px, dronePt.py, 5, 0, Math.PI * 2);
+          ctx.fill();
+
+          const heading = (typeof telem.heading_deg === 'number' && Number.isFinite(telem.heading_deg)) ? telem.heading_deg : 0;
+          const headingRad = (heading - 90) * Math.PI / 180;
+          ctx.strokeStyle = '#00e5ff';
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.moveTo(dronePt.px, dronePt.py);
+          ctx.lineTo(dronePt.px + Math.cos(headingRad) * 20, dronePt.py + Math.sin(headingRad) * 20);
+          ctx.stroke();
+        }
+      }
+
+      // 5. Coverage Stats HUD Overlay
+      if (cov && cov.total_area_m2 !== undefined) {
+        ctx.save();
+        const pct = (cov.coverage_pct !== undefined ? cov.coverage_pct : 0.0).toFixed(1);
+        const scannedM2 = Math.round(cov.scanned_area_m2 || 0).toLocaleString();
+        const totalM2 = Math.round(cov.total_area_m2 || 0).toLocaleString();
+        const scannedCells = cov.scanned_cells_count || 0;
+        const totalCells = cov.total_cells_count || 0;
+
+        const boxW = Math.min(width - 24, 340);
+        const boxH = 58;
+        const bx = 12;
+        const by = 12;
+
+        ctx.fillStyle = 'rgba(6, 9, 16, 0.88)';
+        ctx.strokeStyle = 'rgba(0, 229, 255, 0.4)';
+        ctx.lineWidth = 1;
+        this.drawRoundedRect(ctx, bx, by, boxW, boxH, 4);
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.font = 'bold 12px JetBrains Mono, monospace';
+        ctx.fillStyle = '#00e5ff';
+        ctx.fillText(`HEATMAP COVERAGE: ${pct}%`, bx + 12, by + 20);
+
+        ctx.font = '10px Inter, sans-serif';
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
+        ctx.fillText(`Scanned: ${scannedM2} m² / ${totalM2} m²`, bx + 12, by + 36);
+
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.55)';
+        ctx.fillText(`Discretized Grid: ${scannedCells} / ${totalCells} cells`, bx + 12, by + 50);
+        ctx.restore();
+      } else {
+        // Awaiting telemetry
+        ctx.save();
+        const bannerW = Math.min(width - 40, 460);
+        const bannerH = 56;
+        const bx = (width - bannerW) / 2;
+        const by = 25;
+
+        ctx.fillStyle = 'rgba(28, 20, 6, 0.88)';
+        ctx.strokeStyle = 'rgba(255, 171, 0, 0.7)';
+        ctx.lineWidth = 1.5;
+        this.drawRoundedRect(ctx, bx, by, bannerW, bannerH, 6);
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.fillStyle = '#ffab00';
+        ctx.fillRect(bx, by, 5, bannerH);
+        ctx.font = 'bold 11px JetBrains Mono, monospace';
+        ctx.fillText('SEARCH GRID INITIALIZED // AWAITING COVERAGE TELEMETRY', bx + 16, by + 24);
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
+        ctx.font = '10px Inter, sans-serif';
+        ctx.fillText('Coverage algorithm standing by for Pixhawk GPS coordinate updates', bx + 16, by + 42);
+        ctx.restore();
+      }
+      return;
+    }
+
+    // ==========================================
+    // RENDER MODE: NORMAL MAP
+    // ==========================================
+
+    // 1. Draw Geofence Boundary (Yellow dashed line + subtle envelope tint)
     ctx.strokeStyle = '#ffeb3b';
     ctx.lineWidth = 2;
     ctx.setLineDash([6, 4]);
 
-    if (this.geofenceConfig.fence_type === 'circular') {
+    if (config.fence_type === 'circular') {
+      const fenceR = (config.circle_radius_m || 250) * scale;
+      ctx.fillStyle = 'rgba(255, 235, 59, 0.03)';
       ctx.beginPath();
-      ctx.arc(cx, cy, maxR, 0, Math.PI * 2);
+      ctx.arc(cx, cy, fenceR, 0, Math.PI * 2);
+      ctx.fill();
       ctx.stroke();
-    } else if (this.geofenceConfig.polygon_vertices && this.geofenceConfig.polygon_vertices.length > 2) {
+    } else if (config.polygon_vertices && config.polygon_vertices.length > 2) {
+      ctx.fillStyle = 'rgba(255, 235, 59, 0.03)';
       ctx.beginPath();
-      const centerLat = this.geofenceConfig.circle_center_lat;
-      const centerLon = this.geofenceConfig.circle_center_lon;
-
-      this.geofenceConfig.polygon_vertices.forEach((p, idx) => {
-        // Simple equirectangular projection centered on geofence center
-        const dx = (p.lon - centerLon) * 111320 * Math.cos(centerLat * Math.PI / 180) * scale;
-        const dy = -(p.lat - centerLat) * 110540 * scale;
-        if (idx === 0) ctx.moveTo(cx + dx, cy + dy);
-        else ctx.lineTo(cx + dx, cy + dy);
+      let firstDrawn = false;
+      config.polygon_vertices.forEach((p) => {
+        const pt = toCanvasCoords(p.lat, p.lon);
+        if (!pt) return;
+        if (!firstDrawn) {
+          ctx.moveTo(pt.px, pt.py);
+          firstDrawn = true;
+        } else {
+          ctx.lineTo(pt.px, pt.py);
+        }
       });
-      ctx.closePath();
-      ctx.stroke();
+      if (firstDrawn) {
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+      }
     }
     ctx.setLineDash([]);
 
-    // Draw Waypoints (Magenta)
-    if (this.activeMission && this.activeMission.waypoints) {
-      const centerLat = this.geofenceConfig.circle_center_lat;
-      const centerLon = this.geofenceConfig.circle_center_lon;
+    // 2. Draw Search Boundary (Orange dashed line)
+    if (this.coverageData && Array.isArray(this.coverageData.boundary_geo) && this.coverageData.boundary_geo.length > 2) {
+      ctx.strokeStyle = 'rgba(255, 152, 0, 0.7)';
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([4, 4]);
+      ctx.beginPath();
+      let firstDrawn = false;
+      this.coverageData.boundary_geo.forEach((p) => {
+        const pt = toCanvasCoords(p.lat, p.lon);
+        if (!pt) return;
+        if (!firstDrawn) {
+          ctx.moveTo(pt.px, pt.py);
+          firstDrawn = true;
+        } else {
+          ctx.lineTo(pt.px, pt.py);
+        }
+      });
+      if (firstDrawn) {
+        ctx.closePath();
+        ctx.stroke();
+      }
+      ctx.setLineDash([]);
+    }
+
+    // 3. Draw Mission Waypoints (Magenta)
+    if (this.activeMission && Array.isArray(this.activeMission.waypoints)) {
       ctx.strokeStyle = 'rgba(233, 30, 99, 0.6)';
       ctx.fillStyle = '#e91e63';
       ctx.lineWidth = 2;
 
       ctx.beginPath();
-      this.activeMission.waypoints.forEach((wp, idx) => {
-        const dx = (wp.lon - centerLon) * 111320 * Math.cos(centerLat * Math.PI / 180) * scale;
-        const dy = -(wp.lat - centerLat) * 110540 * scale;
-        const px = cx + dx;
-        const py = cy + dy;
-
-        if (idx === 0) ctx.moveTo(px, py);
-        else ctx.lineTo(px, py);
-      });
-      ctx.stroke();
-
+      let firstDrawn = false;
       this.activeMission.waypoints.forEach((wp) => {
-        const dx = (wp.lon - centerLon) * 111320 * Math.cos(centerLat * Math.PI / 180) * scale;
-        const dy = -(wp.lat - centerLat) * 110540 * scale;
-        const px = cx + dx;
-        const py = cy + dy;
+        const pt = toCanvasCoords(wp.lat, wp.lon);
+        if (!pt) return;
+        if (!firstDrawn) {
+          ctx.moveTo(pt.px, pt.py);
+          firstDrawn = true;
+        } else {
+          ctx.lineTo(pt.px, pt.py);
+        }
+      });
+      if (firstDrawn) {
+        ctx.stroke();
+      }
 
+      this.activeMission.waypoints.forEach(wp => {
+        const pt = toCanvasCoords(wp.lat, wp.lon);
+        if (!pt) return;
         ctx.beginPath();
-        ctx.arc(px, py, 4, 0, Math.PI * 2);
+        ctx.arc(pt.px, pt.py, 4, 0, Math.PI * 2);
         ctx.fill();
         ctx.fillStyle = '#ffffff';
-        ctx.font = '10px JetBrains Mono';
-        ctx.fillText(`#${wp.seq}`, px + 6, py - 4);
+        ctx.font = '10px JetBrains Mono, monospace';
+        ctx.fillText(`#${wp.seq}`, pt.px + 6, pt.py - 4);
         ctx.fillStyle = '#e91e63';
       });
     }
 
-    // Draw Current Drone Position (Cyan dot with pulse)
-    if (this.currentTelemetry && this.currentTelemetry.connected) {
-      const centerLat = this.geofenceConfig.circle_center_lat;
-      const centerLon = this.geofenceConfig.circle_center_lon;
-      const dLat = this.currentTelemetry.latitude;
-      const dLon = this.currentTelemetry.longitude;
+    // 4. Draw Historical Flight Path Breadcrumbs (Ring buffer)
+    if (this.flightPathHistory && this.flightPathHistory.length > 1) {
+      const hist = this.flightPathHistory;
+      const total = hist.length;
 
-      const dx = (dLon - centerLon) * 111320 * Math.cos(centerLat * Math.PI / 180) * scale;
-      const dy = -(dLat - centerLat) * 110540 * scale;
-      const px = cx + dx;
-      const py = cy + dy;
-
-      ctx.fillStyle = '#00e5ff';
+      // Connecting polyline
+      ctx.strokeStyle = 'rgba(0, 229, 255, 0.35)';
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([3, 3]);
       ctx.beginPath();
-      ctx.arc(px, py, 6, 0, Math.PI * 2);
+      let firstDrawn = false;
+      for (let i = 0; i < total; i++) {
+        const pt = toCanvasCoords(hist[i].lat, hist[i].lon);
+        if (!pt) continue;
+        if (!firstDrawn) {
+          ctx.moveTo(pt.px, pt.py);
+          firstDrawn = true;
+        } else {
+          ctx.lineTo(pt.px, pt.py);
+        }
+      }
+      if (firstDrawn) {
+        ctx.stroke();
+      }
+      ctx.setLineDash([]);
+
+      // Breadcrumb dots with fading alpha
+      const step = total > 100 ? 3 : (total > 50 ? 2 : 1);
+      for (let i = 0; i < total; i += step) {
+        const pt = toCanvasCoords(hist[i].lat, hist[i].lon);
+        if (!pt) continue;
+        const alpha = 0.15 + 0.55 * (i / total);
+        ctx.fillStyle = `rgba(0, 229, 255, ${alpha.toFixed(2)})`;
+        ctx.beginPath();
+        ctx.arc(pt.px, pt.py, 2.5, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
+    // 5. Draw Real-time GPS Drone Marker & Heading Vector
+    const telem = this.currentTelemetry;
+    const isConnected = !!(telem && telem.connected);
+    const hasGpsFix = isConnected && (telem.gps_fix_type >= 2) && this.isValidGeoCoord(telem.latitude, telem.longitude);
+
+    if (hasGpsFix) {
+      const dronePt = toCanvasCoords(telem.latitude, telem.longitude);
+      if (dronePt) {
+        // Outer glow pulse
+        ctx.fillStyle = 'rgba(0, 229, 255, 0.25)';
+        ctx.beginPath();
+        ctx.arc(dronePt.px, dronePt.py, 9, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Solid cyan core
+        ctx.fillStyle = '#00e5ff';
+        ctx.beginPath();
+        ctx.arc(dronePt.px, dronePt.py, 5, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Heading vector line
+        const heading = (typeof telem.heading_deg === 'number' && Number.isFinite(telem.heading_deg)) ? telem.heading_deg : 0;
+        const headingRad = (heading - 90) * Math.PI / 180;
+        ctx.strokeStyle = '#00e5ff';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(dronePt.px, dronePt.py);
+        ctx.lineTo(dronePt.px + Math.cos(headingRad) * 24, dronePt.py + Math.sin(headingRad) * 24);
+        ctx.stroke();
+      }
+
+      // 6. Subtle 3D Fix Telemetry HUD Tag
+      ctx.save();
+      const pad = 12;
+      const tagH = 26;
+      const sats = (typeof telem.satellites_visible === 'number') ? telem.satellites_visible : 0;
+      const fix = telem.gps_fix_name || '3D Fix';
+      const latStr = (typeof telem.latitude === 'number' && Number.isFinite(telem.latitude)) ? telem.latitude.toFixed(5) : '--';
+      const lonStr = (typeof telem.longitude === 'number' && Number.isFinite(telem.longitude)) ? telem.longitude.toFixed(5) : '--';
+      const altStr = (typeof telem.altitude_relative_m === 'number' && Number.isFinite(telem.altitude_relative_m)) ? telem.altitude_relative_m.toFixed(1) : '0.0';
+      const hudText = `GPS ${fix} (${sats} Sats) • ${latStr}, ${lonStr} • Alt: ${altStr}m`;
+
+      ctx.font = '10px JetBrains Mono, monospace';
+      const tagW = ctx.measureText(hudText).width + 26;
+
+      ctx.fillStyle = 'rgba(6, 9, 16, 0.85)';
+      ctx.strokeStyle = 'rgba(0, 229, 255, 0.35)';
+      ctx.lineWidth = 1;
+      this.drawRoundedRect(ctx, pad, pad, tagW, tagH, 4);
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.fillStyle = '#00e676';
+      ctx.beginPath();
+      ctx.arc(pad + 10, pad + tagH / 2, 3.5, 0, Math.PI * 2);
       ctx.fill();
 
-      // Heading vector
-      const headingRad = (this.currentTelemetry.heading_deg - 90) * Math.PI / 180;
-      ctx.strokeStyle = '#00e5ff';
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.moveTo(px, py);
-      ctx.lineTo(px + Math.cos(headingRad) * 20, py + Math.sin(headingRad) * 20);
+      ctx.fillStyle = '#00e5ff';
+      ctx.fillText(hudText, pad + 18, pad + 17);
+      ctx.restore();
+
+    } else if (!isConnected) {
+      // 7. Disconnected State Warning Banner
+      ctx.save();
+      const bannerW = Math.min(width - 40, 480);
+      const bannerH = 70;
+      const bx = (width - bannerW) / 2;
+      const by = 25;
+
+      ctx.fillStyle = 'rgba(22, 6, 8, 0.88)';
+      ctx.strokeStyle = 'rgba(255, 23, 68, 0.7)';
+      ctx.lineWidth = 1.5;
+      this.drawRoundedRect(ctx, bx, by, bannerW, bannerH, 6);
+      ctx.fill();
       ctx.stroke();
+
+      ctx.fillStyle = '#ff1744';
+      ctx.fillRect(bx, by, 5, bannerH);
+
+      ctx.fillStyle = '#ff5252';
+      ctx.font = 'bold 12px JetBrains Mono, monospace';
+      ctx.fillText('⚠️ MAVLINK DISCONNECTED // WAITING FOR TELEMETRY', bx + 18, by + 28);
+
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.65)';
+      ctx.font = '10px Inter, sans-serif';
+      ctx.fillText('Pixhawk TELEM2 /dev/serial0 offline • Check physical UART & power', bx + 18, by + 48);
+      ctx.restore();
+
+    } else {
+      // 8. Waiting for GPS Lock Warning Banner
+      ctx.save();
+      const bannerW = Math.min(width - 40, 480);
+      const bannerH = 70;
+      const bx = (width - bannerW) / 2;
+      const by = 25;
+
+      ctx.fillStyle = 'rgba(28, 20, 6, 0.88)';
+      ctx.strokeStyle = 'rgba(255, 171, 0, 0.7)';
+      ctx.lineWidth = 1.5;
+      this.drawRoundedRect(ctx, bx, by, bannerW, bannerH, 6);
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.fillStyle = '#ffab00';
+      ctx.fillRect(bx, by, 5, bannerH);
+
+      ctx.fillStyle = '#ffab00';
+      ctx.font = 'bold 12px JetBrains Mono, monospace';
+      ctx.fillText('🛰️ WAITING FOR GPS FIX // NO SATELLITE LOCK', bx + 18, by + 28);
+
+      const fixName = telem.gps_fix_name || 'No Fix';
+      const sats = telem.satellites_visible || 0;
+      const hdop = telem.hdop !== undefined ? telem.hdop : '--';
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
+      ctx.font = '10px Inter, sans-serif';
+      ctx.fillText(`Fix: ${fixName} • Satellites: ${sats} • HDOP: ${hdop} • Awaiting 3D lock`, bx + 18, by + 48);
+      ctx.restore();
     }
   }
 

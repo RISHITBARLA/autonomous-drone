@@ -3,6 +3,8 @@ Flight Control REST API Routes for AUTONOMOUS-DRONE.
 Provides isolated, explicit interfaces for arming, mode change, takeoff, and RTL.
 Returns HTTP 403 Forbidden whenever flight controls are disabled.
 """
+import os
+from typing import Tuple, Optional
 from flask import Blueprint, jsonify, request
 from backend.flight.flight_controller import flight_controller
 from backend.flight.mavlink_service import mavlink_service
@@ -10,6 +12,19 @@ from config.logging_config import setup_logging
 
 logger = setup_logging("flight_routes")
 flight_bp = Blueprint("flight_bp", __name__, url_prefix="/api/flight")
+
+
+def _check_operator_auth(req) -> Tuple[bool, Optional[str]]:
+    """
+    Verify operator authorization for safety-critical flight commands.
+    Checks environment-configured OPERATOR_TOKEN if strict auth enabled.
+    """
+    operator_token = os.getenv("OPERATOR_TOKEN")
+    if operator_token:
+        provided = req.headers.get("X-Operator-Token") or (req.get_json(silent=True) or {}).get("operator_token")
+        if provided != operator_token:
+            return False, "Invalid or missing operator authorization token (X-Operator-Token header required)"
+    return True, None
 
 
 @flight_bp.route("/status", methods=["GET"])
@@ -27,21 +42,36 @@ def arm_vehicle():
     POST /api/flight/arm - Send arm command to Pixhawk flight controller.
     Requires explicit operator confirmation parameter: {"confirm": true}.
     """
+    auth_ok, auth_err = _check_operator_auth(request)
+    if not auth_ok:
+        return jsonify({"status": "error", "message": auth_err, "code": "UNAUTHORIZED"}), 401
+
     body = request.get_json(silent=True) or {}
     confirm = bool(body.get("confirm", False))
-    res = flight_controller.request_arm(arm=True, confirm=confirm)
+    operator = body.get("operator", request.headers.get("X-Operator-Callsign", "gcs-operator"))
+    res = flight_controller.request_arm(arm=True, confirm=confirm, operator=operator)
     if not res["success"]:
-        code = 403 if res.get("code") == "CONTROL_DISABLED" else 400
+        code = 403 if res.get("code") == "CONTROL_DISABLED" else (409 if res.get("code") == "COMMAND_IN_PROGRESS" else 400)
         return jsonify({"status": "error", "message": res["message"], "code": res.get("code")}), code
     return jsonify({"status": "success", "message": res["message"], "data": res}), 200
 
 
 @flight_bp.route("/disarm", methods=["POST"])
 def disarm_vehicle():
-    """POST /api/flight/disarm - Send disarm command to Pixhawk flight controller."""
-    res = flight_controller.request_arm(arm=False, confirm=True)
+    """
+    POST /api/flight/disarm - Send disarm command to Pixhawk flight controller.
+    Requires explicit operator confirmation parameter: {"confirm": true}.
+    """
+    auth_ok, auth_err = _check_operator_auth(request)
+    if not auth_ok:
+        return jsonify({"status": "error", "message": auth_err, "code": "UNAUTHORIZED"}), 401
+
+    body = request.get_json(silent=True) or {}
+    confirm = bool(body.get("confirm", False))
+    operator = body.get("operator", request.headers.get("X-Operator-Callsign", "gcs-operator"))
+    res = flight_controller.request_arm(arm=False, confirm=confirm, operator=operator)
     if not res["success"]:
-        code = 403 if res.get("code") == "CONTROL_DISABLED" else 400
+        code = 403 if res.get("code") == "CONTROL_DISABLED" else (409 if res.get("code") == "COMMAND_IN_PROGRESS" else 400)
         return jsonify({"status": "error", "message": res["message"], "code": res.get("code")}), code
     return jsonify({"status": "success", "message": res["message"], "data": res}), 200
 

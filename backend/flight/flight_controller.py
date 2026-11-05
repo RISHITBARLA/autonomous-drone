@@ -45,11 +45,13 @@ class FlightController:
         self.enabled = enabled if enabled is not None else settings.FLIGHT_CONTROL_ENABLED
         self._lock = threading.Lock()
         self._command_history: List[Dict[str, Any]] = []
+        self._action_in_progress = False
 
     def get_status(self) -> Dict[str, Any]:
         """Return operational state, safety lock status, and vehicle mode."""
         snap = mavlink_service.get_snapshot()
         with self._lock:
+            last_cmd = self._command_history[0] if self._command_history else None
             return {
                 "flight_control_enabled": self.enabled,
                 "connected": snap.connected,
@@ -68,7 +70,8 @@ class FlightController:
                 "prearm_status": snap.prearm_status,
                 "prearm_messages": snap.prearm_messages,
                 "supported_modes": SUPPORTED_FLIGHT_MODES,
-                "command_count": len(self._command_history)
+                "command_count": len(self._command_history),
+                "last_command": last_cmd
             }
 
     def _record_command(self, cmd_name: str, params: Dict[str, Any], success: bool, message: str) -> None:
@@ -86,15 +89,15 @@ class FlightController:
             if len(self._command_history) > 100:
                 self._command_history.pop()
 
-    def request_arm(self, arm: bool = True, confirm: bool = True) -> Dict[str, Any]:
+    def request_arm(self, arm: bool = True, confirm: bool = True, operator: Optional[str] = None) -> Dict[str, Any]:
         """
         Send normal arm or disarm request to Pixhawk flight controller.
-        Requires explicit operator confirmation for arming.
+        Requires explicit operator confirmation for both arming and disarming.
         Firmware pre-arm safety checks are evaluated on the flight controller itself.
         FORCE_ARM is NEVER used (param2 = 0.0).
         """
         action = "ARM" if arm else "DISARM"
-        params = {"arm": arm, "confirm": confirm}
+        params = {"arm": arm, "confirm": confirm, "operator": operator or "operator"}
 
         if not self.enabled:
             msg = f"Flight control is disabled by default. Enable FLIGHT_CONTROL_ENABLED to allow {action} commands."
@@ -102,87 +105,99 @@ class FlightController:
             self._record_command(action, params, False, msg)
             return {"success": False, "code": "CONTROL_DISABLED", "message": msg}
 
-        if arm and not confirm:
-            msg = "Arming requires explicit operator confirmation."
+        if not confirm:
+            msg = f"{action} requires explicit operator confirmation."
             logger.warning(msg)
             self._record_command(action, params, False, msg)
             return {"success": False, "code": "CONFIRMATION_REQUIRED", "message": msg}
 
-        snap = mavlink_service.get_snapshot()
-        if not snap.connected:
-            msg = f"Cannot {action}: No active MAVLink telemetry heartbeat connection"
-            logger.error(msg)
-            self._record_command(action, params, False, msg)
-            return {"success": False, "code": "NOT_CONNECTED", "message": msg}
+        # Concurrency safety: block simultaneous or duplicate command submissions
+        with self._lock:
+            if self._action_in_progress:
+                msg = f"Cannot {action}: A flight command is currently executing. Please wait."
+                logger.warning(msg)
+                return {"success": False, "code": "COMMAND_IN_PROGRESS", "message": msg}
+            self._action_in_progress = True
 
-        if snap.is_stale:
-            msg = f"Cannot {action}: MAVLink telemetry heartbeat is stale (age: {snap.heartbeat_age_seconds:.1f}s)"
-            logger.error(msg)
-            self._record_command(action, params, False, msg)
-            return {"success": False, "code": "HEARTBEAT_STALE", "message": msg}
-
-        # Issue command through MAVLink
-        if snap.is_simulated:
-            with mavlink_service._lock:
-                mavlink_service._armed = arm
-                mavlink_service._system_status = "ACTIVE" if arm else "STANDBY"
-            msg = f"Simulated Pixhawk successfully {action}ED"
-            logger.info(msg)
-            self._record_command(action, params, True, msg)
-            return {"success": True, "message": msg, "armed": arm}
-
-        # Real hardware command
         try:
-            from pymavlink import mavutil
+            snap = mavlink_service.get_snapshot()
+            if not snap.connected:
+                msg = f"Cannot {action}: No active MAVLink telemetry heartbeat connection"
+                logger.error(msg)
+                self._record_command(action, params, False, msg)
+                return {"success": False, "code": "NOT_CONNECTED", "message": msg}
 
-            # MAV_CMD_COMPONENT_ARM_DISARM:
-            # param1: 1.0 to arm, 0.0 to disarm
-            # param2: 0.0 for NORMAL arming (NEVER 21196 force-arm magic number!)
-            mavlink_service.send_command_long(
-                mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM,
-                param1=1.0 if arm else 0.0,
-                param2=0.0,  # FORCE_ARM is strictly prohibited
-                param3=0.0, param4=0.0, param5=0.0, param6=0.0, param7=0.0
-            )
+            if snap.is_stale:
+                msg = f"Cannot {action}: MAVLink telemetry heartbeat is stale (age: {snap.heartbeat_age_seconds:.1f}s)"
+                logger.error(msg)
+                self._record_command(action, params, False, msg)
+                return {"success": False, "code": "HEARTBEAT_STALE", "message": msg}
 
-            # Wait for armed state confirmation via heartbeat
-            confirmed = mavlink_service.wait_for_arm_state(arm, timeout=4.0)
-            if confirmed:
-                msg = f"Pixhawk successfully {action}ED and confirmed via heartbeat"
+            # Issue command through MAVLink
+            if snap.is_simulated:
+                with mavlink_service._lock:
+                    mavlink_service._armed = arm
+                    mavlink_service._system_status = "ACTIVE" if arm else "STANDBY"
+                msg = f"Simulated Pixhawk successfully {action}ED"
                 logger.info(msg)
                 self._record_command(action, params, True, msg)
                 return {"success": True, "message": msg, "armed": arm}
 
-            # Check if Pixhawk rejected arming with a pre-arm failure or command ACK
-            prearm_err = mavlink_service.get_latest_prearm_error(max_age_seconds=6.0)
-            ack = mavlink_service.get_command_ack(mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM, max_age_seconds=6.0)
+            # Real hardware command
+            try:
+                from pymavlink import mavutil
 
-            if prearm_err:
-                err_msg = f"Pixhawk rejected {action}: {prearm_err}"
-            elif ack and ack.get("result") != 0:
-                result_code = ack.get("result")
-                result_names = {
-                    1: "TEMPORARILY_REJECTED",
-                    2: "DENIED",
-                    3: "UNSUPPORTED",
-                    4: "FAILED",
-                    5: "IN_PROGRESS",
-                    6: "CANCELLED"
-                }
-                res_name = result_names.get(result_code, f"CODE_{result_code}")
-                err_msg = f"Pixhawk rejected {action} command: {res_name}"
-            else:
-                err_msg = f"Pixhawk did not confirm {action} within timeout. Verify pre-arm checks and safety switch."
+                # MAV_CMD_COMPONENT_ARM_DISARM:
+                # param1: 1.0 to arm, 0.0 to disarm
+                # param2: 0.0 for NORMAL arming (NEVER 21196 force-arm magic number!)
+                mavlink_service.send_command_long(
+                    mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM,
+                    param1=1.0 if arm else 0.0,
+                    param2=0.0,  # FORCE_ARM is strictly prohibited
+                    param3=0.0, param4=0.0, param5=0.0, param6=0.0, param7=0.0
+                )
 
-            logger.error(err_msg)
-            self._record_command(action, params, False, err_msg)
-            return {"success": False, "code": "ARM_REJECTED" if arm else "DISARM_REJECTED", "message": err_msg}
+                # Wait for armed state confirmation via heartbeat
+                confirmed = mavlink_service.wait_for_arm_state(arm, timeout=4.0)
+                if confirmed:
+                    msg = f"Pixhawk successfully {action}ED and confirmed via heartbeat"
+                    logger.info(msg)
+                    self._record_command(action, params, True, msg)
+                    return {"success": True, "message": msg, "armed": arm}
 
-        except Exception as e:
-            err = f"Failed sending MAVLink {action} command: {e}"
-            logger.error(err)
-            self._record_command(action, params, False, err)
-            return {"success": False, "code": "COMMUNICATION_ERROR", "message": err}
+                # Check if Pixhawk rejected arming with a pre-arm failure or command ACK
+                prearm_err = mavlink_service.get_latest_prearm_error(max_age_seconds=6.0)
+                ack = mavlink_service.get_command_ack(mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM, max_age_seconds=6.0)
+
+                if prearm_err:
+                    err_msg = f"Pixhawk rejected {action}: {prearm_err}"
+                elif ack and ack.get("result") != 0:
+                    result_code = ack.get("result")
+                    result_names = {
+                        1: "TEMPORARILY_REJECTED",
+                        2: "DENIED",
+                        3: "UNSUPPORTED",
+                        4: "FAILED",
+                        5: "IN_PROGRESS",
+                        6: "CANCELLED"
+                    }
+                    res_name = result_names.get(result_code, f"CODE_{result_code}")
+                    err_msg = f"Pixhawk rejected {action} command: {res_name}"
+                else:
+                    err_msg = f"Pixhawk did not confirm {action} within timeout. Verify pre-arm checks and safety switch."
+
+                logger.error(err_msg)
+                self._record_command(action, params, False, err_msg)
+                return {"success": False, "code": "ARM_REJECTED" if arm else "DISARM_REJECTED", "message": err_msg}
+
+            except Exception as e:
+                err = f"Failed sending MAVLink {action} command: {e}"
+                logger.error(err)
+                self._record_command(action, params, False, err)
+                return {"success": False, "code": "COMMUNICATION_ERROR", "message": err}
+        finally:
+            with self._lock:
+                self._action_in_progress = False
 
     def request_mode(self, mode: str) -> Dict[str, Any]:
         """Request vehicle flight mode transition (e.g. ALT_HOLD, GUIDED, LOITER, RTL)."""

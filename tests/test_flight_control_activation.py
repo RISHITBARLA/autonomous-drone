@@ -19,6 +19,7 @@ Covers all 17 mandatory verification criteria:
 16. Simulator and mock compatibility.
 17. Separation of simulation and physical hardware modes (no silent fallback).
 """
+import os
 import time
 import unittest
 from unittest.mock import MagicMock, patch
@@ -354,6 +355,88 @@ class TestFlightControlActivation(unittest.TestCase):
         self.assertFalse(snap.is_simulated)
         self.assertEqual(snap.connection_type, "UDP_WIFI")
         self.assertFalse(snap.connected)
+
+    def test_18_disarm_requires_confirmation_when_enabled(self):
+        """18. DISARM requires explicit operator confirmation payload."""
+        orig = flight_controller.enabled
+        flight_controller.enabled = True
+        try:
+            # Without confirmation body
+            res_no_confirm = self.client.post("/api/flight/disarm", json={})
+            self.assertEqual(res_no_confirm.status_code, 400)
+            self.assertEqual(res_no_confirm.get_json().get("code"), "CONFIRMATION_REQUIRED")
+
+            # With explicit confirmation body
+            res_confirmed = self.client.post("/api/flight/disarm", json={"confirm": True, "operator": "bench-tester"})
+            self.assertEqual(res_confirmed.status_code, 200)
+            self.assertTrue(res_confirmed.get_json()["data"]["success"])
+        finally:
+            flight_controller.enabled = orig
+
+    def test_19_operator_token_authorization(self):
+        """19. Operator token authorization if OPERATOR_TOKEN environment variable is set."""
+        orig_token = os.environ.get("OPERATOR_TOKEN")
+        orig_enabled = flight_controller.enabled
+        flight_controller.enabled = True
+        os.environ["OPERATOR_TOKEN"] = "secure-bench-token-123"
+        try:
+            # Missing token -> 401 Unauthorized
+            res_unauth = self.client.post("/api/flight/arm", json={"confirm": True})
+            self.assertEqual(res_unauth.status_code, 401)
+            self.assertEqual(res_unauth.get_json().get("code"), "UNAUTHORIZED")
+
+            # Valid token in header -> 200 Success
+            res_auth = self.client.post(
+                "/api/flight/arm",
+                json={"confirm": True},
+                headers={"X-Operator-Token": "secure-bench-token-123"}
+            )
+            self.assertEqual(res_auth.status_code, 200)
+            self.assertTrue(res_auth.get_json()["data"]["success"])
+        finally:
+            if orig_token is not None:
+                os.environ["OPERATOR_TOKEN"] = orig_token
+            else:
+                os.environ.pop("OPERATOR_TOKEN", None)
+            flight_controller.enabled = orig_enabled
+
+    def test_20_concurrent_command_locking(self):
+        """20. Concurrency lock prevents simultaneous command execution."""
+        orig = flight_controller.enabled
+        flight_controller.enabled = True
+        try:
+            # Simulate an action already in progress
+            with flight_controller._lock:
+                flight_controller._action_in_progress = True
+
+            res = self.client.post("/api/flight/arm", json={"confirm": True})
+            self.assertEqual(res.status_code, 409)
+            self.assertEqual(res.get_json().get("code"), "COMMAND_IN_PROGRESS")
+        finally:
+            with flight_controller._lock:
+                flight_controller._action_in_progress = False
+            flight_controller.enabled = orig
+
+    def test_21_status_reports_last_command_and_heartbeat_state(self):
+        """21. /api/flight/status exposes last_command, armed flag, and heartbeat metrics."""
+        orig = flight_controller.enabled
+        flight_controller.enabled = True
+        try:
+            # Issue an arm command
+            self.client.post("/api/flight/arm", json={"confirm": True, "operator": "audit-tester"})
+
+            # Query status
+            res = self.client.get("/api/flight/status")
+            self.assertEqual(res.status_code, 200)
+            data = res.get_json()["data"]
+            self.assertIn("last_command", data)
+            self.assertIsNotNone(data["last_command"])
+            self.assertEqual(data["last_command"]["command"], "ARM")
+            self.assertEqual(data["last_command"]["params"]["operator"], "audit-tester")
+            self.assertTrue(data["last_command"]["success"])
+            self.assertTrue(data["armed"])
+        finally:
+            flight_controller.enabled = orig
 
 
 if __name__ == "__main__":

@@ -18,6 +18,7 @@ echo "📂 Project root: $SCRIPT_DIR"
 echo "🔑 Checking hardware group permissions..."
 sudo usermod -a -G dialout,video "$USER"
 
+
 # 2. Update Linux packages and camera dependencies
 echo "📦 Checking system packages..."
 sudo apt-get update -y

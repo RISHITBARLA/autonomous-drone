@@ -122,6 +122,132 @@ class TestAPIEndpoints(unittest.TestCase):
         data = response.get_json()
         self.assertEqual(data["status"], "error")
 
+    # -------------------------------------------------------------
+    # Milestone M2: Frontend Cache-Busting Verification Tests
+    # -------------------------------------------------------------
+    def test_cache_control_headers_root_route(self):
+        """Verify GET / returns strict no-cache headers for HTML shell."""
+        response = self.client.get("/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.headers.get("Cache-Control"),
+            "no-cache, no-store, must-revalidate"
+        )
+        self.assertEqual(response.headers.get("Pragma"), "no-cache")
+        self.assertEqual(response.headers.get("Expires"), "0")
+
+    def test_cache_control_headers_index_html(self):
+        """Verify GET /index.html returns strict no-cache headers."""
+        response = self.client.get("/index.html")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.headers.get("Cache-Control"),
+            "no-cache, no-store, must-revalidate"
+        )
+        self.assertEqual(response.headers.get("Pragma"), "no-cache")
+        self.assertEqual(response.headers.get("Expires"), "0")
+
+    def test_cache_control_headers_static_assets(self):
+        """Verify /css/* and /js/* assets return no-cache, must-revalidate."""
+        res_css = self.client.get("/css/dashboard.css")
+        self.assertEqual(res_css.status_code, 200)
+        self.assertEqual(
+            res_css.headers.get("Cache-Control"),
+            "no-cache, must-revalidate"
+        )
+
+        res_js = self.client.get("/js/dashboard.js")
+        self.assertEqual(res_js.status_code, 200)
+        self.assertEqual(
+            res_js.headers.get("Cache-Control"),
+            "no-cache, must-revalidate"
+        )
+
+    def test_cache_control_headers_with_version_query_params(self):
+        """Verify version query string requests preserve revalidate cache headers."""
+        res_css = self.client.get("/css/dashboard.css?v=20261105.1")
+        self.assertEqual(res_css.status_code, 200)
+        self.assertEqual(
+            res_css.headers.get("Cache-Control"),
+            "no-cache, must-revalidate"
+        )
+
+        res_js = self.client.get("/js/dashboard.js?v=20261105.1")
+        self.assertEqual(res_js.status_code, 200)
+        self.assertEqual(
+            res_js.headers.get("Cache-Control"),
+            "no-cache, must-revalidate"
+        )
+
+    def test_index_html_contains_cache_busting_version_tags(self):
+        """Verify frontend/index.html includes ?v=20261105.1 in CSS and JS tags."""
+        response = self.client.get("/")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"/css/dashboard.css?v=20261105.1", response.data)
+        self.assertIn(b"/js/dashboard.js?v=20261105.1", response.data)
+
+    def test_api_routes_unaffected_by_static_cache_headers(self):
+        """Verify API endpoints do not receive frontend static cache-control headers."""
+        response = self.client.get("/api/health")
+        self.assertEqual(response.status_code, 200)
+        self.assertNotEqual(
+            response.headers.get("Cache-Control"),
+            "no-cache, no-store, must-revalidate"
+        )
+
+    # -------------------------------------------------------------
+    # Milestone M2: Geofence Coverage API Endpoint Tests
+    # -------------------------------------------------------------
+    def test_get_geofence_coverage_endpoint_schema_and_calculations(self):
+        """Verify GET /api/geofence/coverage returns valid status, schema, and metrics."""
+        response = self.client.get("/api/geofence/coverage")
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["status"], "success")
+
+        data = payload.get("data", payload)
+        self.assertIn("boundary_type", data)
+        self.assertIn("total_area_m2", data)
+        self.assertIn("scanned_area_m2", data)
+        self.assertIn("coverage_pct", data)
+        self.assertIn("scanned_cells_count", data)
+        self.assertIn("total_cells_count", data)
+        self.assertIn("grid_resolution_m", data)
+        self.assertIn("scanned_points", data)
+
+        self.assertGreater(data["total_area_m2"], 0.0)
+        self.assertGreaterEqual(data["scanned_area_m2"], 0.0)
+        self.assertGreaterEqual(data["coverage_pct"], 0.0)
+        self.assertLessEqual(data["coverage_pct"], 100.0)
+        self.assertGreater(data["total_cells_count"], 0)
+        self.assertGreaterEqual(data["scanned_cells_count"], 0)
+        self.assertIsInstance(data["scanned_points"], list)
+
+        grid_res = data["grid_resolution_m"]
+        expected_scanned_area = round(data["scanned_cells_count"] * (grid_res ** 2), 1)
+        self.assertAlmostEqual(data["scanned_area_m2"], expected_scanned_area, delta=0.5)
+
+        expected_pct = round((data["scanned_cells_count"] / data["total_cells_count"]) * 100.0, 2)
+        self.assertAlmostEqual(data["coverage_pct"], expected_pct, places=2)
+
+    def test_post_geofence_coverage_reset_flow(self):
+        """Verify POST /api/geofence/coverage/reset resets scanned cells to zero."""
+        reset_res = self.client.post("/api/geofence/coverage/reset")
+        self.assertEqual(reset_res.status_code, 200)
+        reset_data = reset_res.get_json()
+        self.assertEqual(reset_data["status"], "success")
+
+        cov_res = self.client.get("/api/geofence/coverage")
+        self.assertEqual(cov_res.status_code, 200)
+        cov_data = cov_res.get_json()
+        data = cov_data.get("data", cov_data)
+
+        self.assertEqual(data["scanned_cells_count"], 0)
+        self.assertEqual(data["scanned_area_m2"], 0.0)
+        self.assertEqual(data["coverage_pct"], 0.0)
+        self.assertEqual(len(data["scanned_points"]), 0)
+
 
 if __name__ == "__main__":
     unittest.main()
+

@@ -55,9 +55,10 @@ class Settings:
 
     # MAVLink & Flight Controller Communication
     MAVLINK_TRANSPORT: str = os.getenv("MAVLINK_TRANSPORT", "udp").lower()
-    MAVLINK_CONNECTION: str = os.getenv("MAVLINK_CONNECTION", os.getenv("MAVLINK_CONNECTION_STRING", "udpin:0.0.0.0:14550"))
-    MAVLINK_CONNECTION_STRING: str = MAVLINK_CONNECTION  # Retained for backward compatibility
-    MAVLINK_BAUDRATE: int = int(os.getenv("MAVLINK_BAUDRATE", "57600"))
+    _DEFAULT_MAVLINK_CONN: str = "/dev/serial0" if MAVLINK_TRANSPORT == "serial" else "udpin:0.0.0.0:14550"
+    MAVLINK_CONNECTION: str = os.getenv("MAVLINK_CONNECTION", os.getenv("MAVLINK_CONNECTION_STRING", _DEFAULT_MAVLINK_CONN))
+    MAVLINK_CONNECTION_STRING: str = os.getenv("MAVLINK_CONNECTION_STRING", MAVLINK_CONNECTION)
+    MAVLINK_BAUDRATE: int = int(os.getenv("MAVLINK_BAUDRATE", "115200" if MAVLINK_TRANSPORT == "serial" else "57600"))
     MAVLINK_HEARTBEAT_TIMEOUT: float = float(os.getenv("MAVLINK_HEARTBEAT_TIMEOUT", "5.0"))
     MAVLINK_SIMULATE: bool = os.getenv("MAVLINK_SIMULATE", "true").lower() in ("true", "1", "yes")
 
@@ -103,8 +104,30 @@ class Settings:
             raise ValueError(
                 f"Invalid default FLIGHT_MODE '{cls.FLIGHT_MODE}'. Must be one of {supported_modes}"
             )
-        if not cls.MAVLINK_CONNECTION or not cls.MAVLINK_CONNECTION.strip():
+        if not cls.MAVLINK_CONNECTION or not str(cls.MAVLINK_CONNECTION).strip():
             raise ValueError("MAVLINK_CONNECTION string cannot be empty.")
+
+        # Environment consistency check between MAVLINK_CONNECTION and MAVLINK_CONNECTION_STRING
+        env_conn = os.getenv("MAVLINK_CONNECTION")
+        env_conn_str = os.getenv("MAVLINK_CONNECTION_STRING")
+        if env_conn and env_conn_str and env_conn.strip() != env_conn_str.strip():
+            raise ValueError(
+                f"Configuration conflict: MAVLINK_CONNECTION ('{env_conn}') and "
+                f"MAVLINK_CONNECTION_STRING ('{env_conn_str}') must be identical."
+            )
+
+        # Transport protocol vs connection target validation
+        conn_str = str(cls.MAVLINK_CONNECTION).strip().lower()
+        if cls.MAVLINK_TRANSPORT == "serial":
+            if conn_str.startswith(("udp:", "udpin:", "udpout:", "tcp:", "tcpin:", "tcpout:")):
+                raise ValueError(
+                    f"MAVLINK_TRANSPORT is 'serial' but MAVLINK_CONNECTION is a network URI: '{cls.MAVLINK_CONNECTION}'"
+                )
+        elif cls.MAVLINK_TRANSPORT in ("udp", "tcp"):
+            if conn_str.startswith(("/dev/", "com")):
+                raise ValueError(
+                    f"MAVLINK_TRANSPORT is '{cls.MAVLINK_TRANSPORT}' but MAVLINK_CONNECTION is a serial port: '{cls.MAVLINK_CONNECTION}'"
+                )
 
 
 settings = Settings()

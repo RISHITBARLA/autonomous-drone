@@ -6,6 +6,7 @@ auditing missions against fences, and previewing trajectory profiles.
 from flask import Blueprint, jsonify, request
 from backend.geofence.geofence_service import geofence_service
 from backend.mission.mission_service import mission_service
+from backend.search.coverage_planner import coverage_planner
 from config.logging_config import setup_logging
 
 logger = setup_logging("geofence_routes")
@@ -27,6 +28,7 @@ def update_geofence():
     body = request.get_json() or {}
     try:
         updated = geofence_service.update_config(body)
+        coverage_planner.reconfigure(updated)
         return jsonify({
             "status": "success",
             "message": "Geofence configuration updated",
@@ -38,6 +40,109 @@ def update_geofence():
             "status": "error",
             "message": f"Invalid configuration: {str(e)}"
         }), 400
+
+
+def _extract_observation_hotspots():
+    """Extract and cluster genuine vision detection observation hot spots."""
+    observations = []
+    try:
+        from backend.vision.vision_service import vision_service
+        history = vision_service.get_history(limit=50)
+        valid_dets = [
+            d for d in history
+            if d.get("latitude") is not None and d.get("longitude") is not None
+            and (d["latitude"] != 0.0 or d["longitude"] != 0.0)
+        ]
+        clusters = []
+        for d in valid_dets:
+            matched = False
+            for c in clusters:
+                dlat = (d["latitude"] - c["lat"]) * 110540.0
+                dlon = (d["longitude"] - c["lon"]) * 111320.0 * 0.794
+                dist = (dlat ** 2 + dlon ** 2) ** 0.5
+                if dist < 5.0 and d.get("payload") == c.get("payload"):
+                    c["count"] += 1
+                    c["confidence"] = max(c["confidence"], float(d.get("confidence", 0.0)))
+                    c["intensity"] = min(1.0, c["count"] * 0.25)
+                    matched = True
+                    break
+            if not matched:
+                clusters.append({
+                    "lat": float(d["latitude"]),
+                    "lon": float(d["longitude"]),
+                    "payload": str(d.get("payload", "TARGET")),
+                    "label": f"QR: {str(d.get('payload', 'TARGET'))[:12]}",
+                    "confidence": float(d.get("confidence", 0.0)),
+                    "count": 1,
+                    "intensity": 0.25,
+                    "latest_timestamp": float(d.get("timestamp", 0.0))
+                })
+        observations = clusters
+    except Exception as e:
+        logger.debug("Vision detection hotspot extraction: %s", e)
+    return observations
+
+
+@geofence_bp.route("/coverage", methods=["GET"])
+def get_geofence_coverage():
+    """
+    GET /api/geofence/coverage
+    Return real-time geofence search coverage snapshot and vision observation hot spots.
+    """
+    snap = coverage_planner.get_coverage_snapshot()
+    observations = _extract_observation_hotspots()
+
+    response_data = dict(snap)
+    response_data["observations"] = observations
+
+    return jsonify({
+        "status": "success",
+        "data": response_data,
+        "boundary_type": response_data["boundary_type"],
+        "boundary_geo": response_data["boundary_geo"],
+        "total_area_m2": response_data["total_area_m2"],
+        "scanned_area_m2": response_data["scanned_area_m2"],
+        "coverage_pct": response_data["coverage_pct"],
+        "scanned_cells_count": response_data["scanned_cells_count"],
+        "total_cells_count": response_data["total_cells_count"],
+        "grid_resolution_m": response_data["grid_resolution_m"],
+        "search_altitude_m": response_data["search_altitude_m"],
+        "footprint_width_m": response_data["footprint_width_m"],
+        "footprint_height_m": response_data["footprint_height_m"],
+        "scanned_points": response_data["scanned_points"],
+        "observations": observations
+    }), 200
+
+
+@geofence_bp.route("/coverage/reset", methods=["POST"])
+def reset_geofence_coverage():
+    """
+    POST /api/geofence/coverage/reset
+    Reset accumulated scanned coverage cells back to zero.
+    """
+    coverage_planner.reset_coverage()
+    snap = coverage_planner.get_coverage_snapshot()
+    response_data = dict(snap)
+    response_data["observations"] = []
+
+    return jsonify({
+        "status": "success",
+        "message": "Coverage state reset successfully",
+        "data": response_data,
+        "boundary_type": response_data["boundary_type"],
+        "boundary_geo": response_data["boundary_geo"],
+        "total_area_m2": response_data["total_area_m2"],
+        "scanned_area_m2": response_data["scanned_area_m2"],
+        "coverage_pct": response_data["coverage_pct"],
+        "scanned_cells_count": response_data["scanned_cells_count"],
+        "total_cells_count": response_data["total_cells_count"],
+        "grid_resolution_m": response_data["grid_resolution_m"],
+        "search_altitude_m": response_data["search_altitude_m"],
+        "footprint_width_m": response_data["footprint_width_m"],
+        "footprint_height_m": response_data["footprint_height_m"],
+        "scanned_points": response_data["scanned_points"],
+        "observations": []
+    }), 200
 
 
 @geofence_bp.route("/check-point", methods=["POST"])

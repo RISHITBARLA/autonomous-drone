@@ -11,7 +11,7 @@ _project_root = str(Path(__file__).resolve().parent.parent)
 if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
-from flask import Flask, send_from_directory, jsonify
+from flask import Flask, send_from_directory, jsonify, request
 from flask_cors import CORS
 
 from config.settings import settings
@@ -67,6 +67,22 @@ def create_app() -> Flask:
             return send_from_directory(str(settings.FRONTEND_DIR), path)
         # Default fallback to index.html for SPA client-side routing
         return send_from_directory(str(settings.FRONTEND_DIR), "index.html")
+
+    @app.after_request
+    def add_cache_control_headers(response):
+        """
+        Enforce strict HTTP caching rules for Ground Station frontend:
+        - HTML shell (/, /index.html) must never be cached to ensure fresh asset manifests.
+        - Static versioned assets (/css/*, /js/*) must revalidate with server on each request.
+        """
+        path = request.path
+        if path in ("/", "/index.html"):
+            response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+            response.headers["Pragma"] = "no-cache"
+            response.headers["Expires"] = "0"
+        elif path.startswith(("/css/", "/js/")):
+            response.headers["Cache-Control"] = "no-cache, must-revalidate"
+        return response
 
     # Error Handlers
     @app.errorhandler(404)

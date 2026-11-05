@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/css/dashboard.css">
+  <link rel="stylesheet" href="/css/dashboard.css?v=20261105.1">
 </head>
 <body class="dark-theme">
   <!-- Main Grid Layout -->
@@ -632,7 +632,9 @@
               </div>
               <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
                 <span class="card-badge" id="fcHardwareModeBadge">SIMULATION</span>
+                <span class="card-badge" id="fcMavlinkConnBadge">MAVLINK: DISCONNECTED</span>
                 <span class="card-badge" id="fcHeartbeatBadge">NO HEARTBEAT</span>
+                <span class="card-badge" id="fcCurrentModeBadge">MODE: --</span>
                 <span class="card-badge normal" id="fcArmedBadge">DISARMED</span>
               </div>
             </div>
@@ -645,6 +647,11 @@
               <!-- Heartbeat Timeout Alert Banner -->
               <div id="fcStaleNotice" class="hidden" style="background: rgba(255, 171, 0, 0.15); border: 1px solid var(--accent-amber); border-radius: var(--radius-sm); padding: 10px 14px; margin-bottom: 16px; font-size: 0.85rem; color: #ffe082;">
                 ⚠️ <strong>Heartbeat Stale / Connection Interrupted:</strong> No recent telemetry heartbeat received from Pixhawk (> 5.0s). Flight commands are locked out for safety.
+              </div>
+
+              <!-- Safety Mandate Banner -->
+              <div style="background: rgba(0, 229, 255, 0.08); border: 1px solid rgba(0, 229, 255, 0.3); border-radius: var(--radius-sm); padding: 8px 12px; margin-bottom: 14px; font-size: 0.78rem; color: var(--accent-cyan); display: flex; align-items: center; gap: 8px;">
+                <span>🛡️ <strong>Safety Mandate:</strong> Propellers must be completely removed for all physical bench tests. All Pixhawk firmware pre-arm safety checks are strictly preserved. RF transmission restricted to &le; 2.4 GHz.</span>
               </div>
 
               <!-- Flight Control Layout: Left Controls, Right Pre-Arm Diagnostics -->
@@ -674,11 +681,11 @@
                   </div>
 
                   <h4 style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 10px; text-transform: uppercase;">2. Operator Arming Actions</h4>
-                  <div class="flight-btn-group">
+                  <div class="flight-btn-group" style="display: flex; gap: 10px; flex-wrap: wrap;">
                     <button class="btn btn-primary btn-danger-action" id="btnOpenArmModal" title="Requires explicit operator confirmation">
                       ⚡ ARM Drone (AltHold)
                     </button>
-                    <button class="btn btn-secondary" id="btnDisarmDrone" title="Disarm Motors">
+                    <button class="btn btn-secondary" id="btnDisarmDrone" title="Disarm Motors (Requires explicit confirmation)">
                       🛑 DISARM Drone
                     </button>
                     <button class="btn btn-ghost btn-warning-action" id="btnEmergencyRTL" title="Trigger RTL Failsafe">
@@ -686,7 +693,7 @@
                     </button>
                   </div>
                   <p style="font-size: 0.72rem; color: var(--text-muted); margin-top: 8px;">
-                    * Normal arming evaluates ArduPilot firmware pre-arm checks. Force-arm is never used. Propellers must be removed for bench testing.
+                    * Explicit operator confirmation required. Verified against real Pixhawk HEARTBEAT state. Force-arm is permanently blocked.
                   </p>
                 </div>
 
@@ -695,7 +702,6 @@
                   <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; flex-wrap: wrap; gap: 6px;">
                     <h4 style="font-size: 0.85rem; color: var(--text-muted); text-transform: uppercase; margin: 0;">Pre-Arm Status &amp; STATUSTEXT</h4>
                     <div style="display: flex; gap: 6px; align-items: center;">
-                      <button class="btn btn-secondary" id="btnDisableArmingChecks" style="font-size: 0.72rem; padding: 4px 8px; border-color: var(--accent-amber); color: var(--accent-amber);" title="Set ARMING_CHECK=0, FENCE_ENABLE=0, BRD_SAFETYENABLE=0 on Pixhawk">🛠️ Disable Checks (Bench Test)</button>
                       <span class="card-badge" id="fcPrearmBadge">READY</span>
                     </div>
                   </div>
@@ -710,9 +716,19 @@
               </div>
 
               <!-- Command Status Bar -->
-              <div id="fcCommandFeedback" style="font-size: 0.82rem; padding: 8px 12px; border-radius: var(--radius-sm); background: rgba(0,0,0,0.3); border: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
-                <span id="fcCommandFeedbackText">Flight control subsystem initialized and ready.</span>
+              <div id="fcCommandFeedback" style="font-size: 0.82rem; padding: 10px 14px; border-radius: var(--radius-sm); background: rgba(0,0,0,0.3); border: 1px solid var(--border-color); margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
+                <div>
+                  <span style="color: var(--text-muted); margin-right: 6px;">Command Status:</span>
+                  <span id="fcCommandFeedbackText">Flight control subsystem initialized and ready.</span>
+                </div>
                 <span id="fcCommandFeedbackTime" style="font-family: var(--font-mono); color: var(--text-muted);">--:--:--</span>
+              </div>
+
+              <!-- Dedicated Last Command Audit Box -->
+              <div id="fcLastCommandBox" style="font-size: 0.76rem; padding: 6px 12px; border-radius: var(--radius-sm); background: rgba(255,255,255,0.02); border: 1px dashed rgba(255,255,255,0.1); color: var(--text-muted); display: flex; justify-content: space-between; align-items: center;">
+                <span>Last Audited Command: <strong id="fcLastCmdName" style="color: var(--text-main);">None</strong></span>
+                <span>Result: <strong id="fcLastCmdResult" style="color: var(--text-muted);">--</strong></span>
+                <span id="fcLastCmdTime" style="font-family: var(--font-mono);">--:--:--</span>
               </div>
             </div>
           </section>
@@ -824,17 +840,36 @@
             <!-- 2D Canvas Visualizer -->
             <div class="card">
               <div class="card-header">
-                <span class="card-title">Geofence Radar Visualizer</span>
-                <span class="card-badge highlight" id="geofenceSafetyBadge">SAFE ENVELOPE</span>
+                <div class="card-title-group">
+                  <span class="card-title">Geofence &amp; Navigation Visualizer</span>
+                </div>
+                <div style="display: flex; gap: 8px; align-items: center;">
+                  <div class="camera-actions" id="mapModeToggleGroup">
+                    <button class="btn btn-sm btn-ghost active" id="btnMapNormal" title="Normal Navigation Map">Normal Map</button>
+                    <button class="btn btn-sm btn-ghost" id="btnMapHeatmap" title="Search Coverage &amp; Observation Heatmap">Heatmap</button>
+                  </div>
+                  <span class="card-badge highlight" id="geofenceSafetyBadge">SAFE ENVELOPE</span>
+                </div>
               </div>
               <div class="card-body">
                 <div class="map-canvas-container">
                   <canvas id="geofenceCanvas"></canvas>
                 </div>
-                <div style="display: flex; justify-content: space-between; margin-top: 10px; font-size: 0.75rem; color: var(--text-muted);">
+                <!-- Dynamic Legend for Normal Map -->
+                <div id="mapLegendNormal" style="display: flex; justify-content: space-between; margin-top: 10px; font-size: 0.75rem; color: var(--text-muted); flex-wrap: wrap; gap: 6px;">
                   <span>● Cyan: Drone Position</span>
-                  <span>○ Yellow: Boundary Limit</span>
+                  <span>○ Yellow: Geofence Limit</span>
+                  <span>▢ Orange: Search Boundary</span>
                   <span>▲ Magenta: Waypoints</span>
+                  <span>┈ Cyan Trail: Flight Path</span>
+                </div>
+                <!-- Dynamic Legend for Heatmap -->
+                <div id="mapLegendHeatmap" style="display: none; justify-content: space-between; margin-top: 10px; font-size: 0.75rem; color: var(--text-muted); flex-wrap: wrap; gap: 6px;">
+                  <span>🟦 Cyan: Low Coverage</span>
+                  <span>🟩 Green: Medium</span>
+                  <span>🟨 Amber: High</span>
+                  <span>🟥 Red: QR / Target Hotspot</span>
+                  <span>○ Yellow: Boundary Limit</span>
                 </div>
               </div>
             </div>
@@ -915,6 +950,37 @@
     </div>
   </div>
 
-  <script src="/js/dashboard.js"></script>
+  <!-- Motor Disarming Confirmation Modal -->
+  <div class="modal-backdrop hidden" id="disarmConfirmModal">
+    <div class="modal-box">
+      <div class="modal-header">
+        <span class="modal-title">⚠️ CONFIRM MOTOR DISARMING</span>
+        <button class="modal-close" id="btnCloseDisarmModal">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p style="color: var(--accent-amber); font-weight: 600; margin-bottom: 8px;">
+          CAUTION: You are requesting motor DISARM on the flight controller.
+        </p>
+        <p style="font-size: 0.82rem; color: var(--text-muted); margin-bottom: 12px; line-height: 1.4;">
+          This initiates an explicit disarm command to Pixhawk 2.4.8 (MAV_CMD_COMPONENT_ARM_DISARM, param1=0.0). Motor rotation will be commanded to cease immediately.
+        </p>
+        <div style="background: rgba(0,0,0,0.3); border: 1px solid var(--border-color); padding: 10px; border-radius: var(--radius-sm); font-size: 0.8rem; margin-bottom: 14px;">
+          <div style="margin-bottom: 4px;">Current Flight Mode: <strong class="highlight" id="modalDisarmMode">ALT_HOLD</strong></div>
+          <div style="margin-bottom: 4px;">Armed Status: <strong id="modalDisarmArmedState" style="color: var(--accent-red);">ARMED</strong></div>
+          <div>Telemetry Status: <strong id="modalDisarmConnState">CONNECTED</strong></div>
+        </div>
+        <label style="display: flex; align-items: flex-start; gap: 10px; font-size: 0.82rem; cursor: pointer;">
+          <input type="checkbox" id="chkDisarmSafetyConfirm" style="margin-top: 3px;" />
+          <span>I confirm this explicit operator command to disarm motor outputs.</span>
+        </label>
+      </div>
+      <div class="modal-footer" style="display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; border-top: 1px solid var(--border-color); padding-top: 14px;">
+        <button class="btn btn-ghost btn-sm" id="btnCancelDisarmModal">Cancel</button>
+        <button class="btn btn-secondary btn-sm" id="btnExecuteDisarmModal" disabled>CONFIRM DISARM</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/js/dashboard.js?v=20261105.1"></script>
 </body>
 </html>

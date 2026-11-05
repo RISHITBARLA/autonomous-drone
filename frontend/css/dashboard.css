@@ -1146,3 +1146,16 @@ body {
 .modal-close:hover {
   color: var(--text-main);
 }
+
+/* Geofence & Navigation Map Enhancements */
+#mapModeToggleGroup {
+  margin-right: 4px;
+}
+
+@media (max-width: 600px) {
+  #pane-geofence .card-header {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+}
+
