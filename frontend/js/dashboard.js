@@ -127,7 +127,6 @@ class DroneDashboard {
     this.qrCenterVal = document.getElementById('qrCenterVal');
     this.qrTimestampVal = document.getElementById('qrTimestampVal');
     this.qrScoreVal = document.getElementById('qrScoreVal');
-    this.qrActionVal = document.getElementById('qrActionVal');
     this.btnAssociateQRWithMission = document.getElementById('btnAssociateQRWithMission');
     this.qrMissionMatchFeedback = document.getElementById('qrMissionMatchFeedback');
     this.qrHistoryTableBody = document.getElementById('qrHistoryTableBody');
@@ -875,7 +874,7 @@ class DroneDashboard {
 
   openArmModal() {
     if (!this.armConfirmModal) return;
-    const selectedMode = this.currentTelemetry?.flight_mode || (this.fcModeSelect ? this.fcModeSelect.value : 'STABILIZE');
+    const selectedMode = this.fcModeSelect ? this.fcModeSelect.value : 'ALT_HOLD';
     if (this.modalTargetMode) this.modalTargetMode.textContent = selectedMode;
     if (this.modalHwType) {
       const isSim = this.fcHardwareModeBadge && this.fcHardwareModeBadge.textContent.includes('SIMULATION');
@@ -895,7 +894,7 @@ class DroneDashboard {
 
   openDisarmModal() {
     if (!this.disarmConfirmModal) return;
-    const currentMode = this.currentTelemetry?.flight_mode || (this.fcModeSelect ? this.fcModeSelect.value : 'STABILIZE');
+    const currentMode = this.fcModeSelect ? this.fcModeSelect.value : 'ALT_HOLD';
     if (this.modalDisarmMode) this.modalDisarmMode.textContent = currentMode;
     if (this.modalDisarmArmedState) this.modalDisarmArmedState.textContent = 'ARMED';
     if (this.modalDisarmConnState) {
@@ -918,7 +917,7 @@ class DroneDashboard {
     if (this.btnOpenArmModal) this.btnOpenArmModal.disabled = true;
     if (this.btnDisarmDrone) this.btnDisarmDrone.disabled = true;
 
-    const mode = this.currentTelemetry?.flight_mode || (this.fcModeSelect ? this.fcModeSelect.value : 'STABILIZE');
+    const mode = this.fcModeSelect ? this.fcModeSelect.value : 'ALT_HOLD';
     this.updateCommandFeedback(`ARM command sent to Pixhawk (${mode}). Evaluating pre-arm checks & awaiting heartbeat...`, 'pending');
 
     try {
@@ -1286,25 +1285,8 @@ class DroneDashboard {
           if (this.qrConfidenceBadge) this.qrConfidenceBadge.textContent = `${Math.round(d.confidence * 100)}% Conf`;
           if (this.qrBboxVal) this.qrBboxVal.textContent = `(${d.bbox.x}, ${d.bbox.y}) ${d.bbox.width}x${d.bbox.height}`;
           if (this.qrCenterVal) this.qrCenterVal.textContent = `[${d.center[0]}, ${d.center[1]}]`;
-          if (this.qrTimestampVal) this.qrTimestampVal.textContent = d.iso_time ? d.iso_time.replace('T', ' ').substring(0, 19) : '--';
+          if (this.qrTimestampVal) this.qrTimestampVal.textContent = d.iso_time.replace('T', ' ').substring(0, 19);
           if (this.qrScoreVal) this.qrScoreVal.textContent = `${d.confidence}`;
-          if (this.qrActionVal) {
-            if (d.action_triggered) {
-              const outcome = d.action_result ? (d.action_result.success ? 'ACCEPTED' : (d.action_result.message || 'DISPATCHED')) : 'TRIGGERED';
-              this.qrActionVal.textContent = `${d.action_triggered} (${outcome})`;
-            } else {
-              this.qrActionVal.textContent = '--';
-            }
-          }
-
-          // Real-time notification and log when an action (e.g. RTL) is triggered
-          if (d.action_triggered && this._lastNotifiedQrTime !== d.iso_time) {
-            this._lastNotifiedQrTime = d.iso_time;
-            const ok = d.action_result && d.action_result.success;
-            const outcomeStr = ok ? 'ACCEPTED' : (d.action_result?.message || 'DISPATCHED');
-            this.log(`🎯 QR Decoded: "${d.payload}" ➔ Action: ${d.action_triggered} [${outcomeStr}]`, ok ? 'success' : 'warn');
-            this.updateCommandFeedback(`QR Action: ${d.action_triggered} triggered by "${d.payload}" (${outcomeStr})`, ok ? 'accepted' : 'pending');
-          }
         }
       }
 
@@ -1314,20 +1296,15 @@ class DroneDashboard {
           if (!hJson.data || hJson.data.length === 0) {
             this.qrHistoryTableBody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: var(--text-muted);">No detections yet. Start scanner or upload an image.</td></tr>';
           } else {
-            this.qrHistoryTableBody.innerHTML = hJson.data.map(item => {
-              const actionBadge = item.action_triggered
-                ? ` <span class="card-badge" style="background:var(--accent-amber);color:#000;font-weight:600;padding:2px 6px;">${this.escapeHtml(item.action_triggered)}</span>`
-                : '';
-              return `
+            this.qrHistoryTableBody.innerHTML = hJson.data.map(item => `
               <tr>
-                <td class="mono">${item.iso_time ? item.iso_time.substring(11, 19) : '--'}</td>
+                <td class="mono">${item.iso_time.substring(11, 19)}</td>
                 <td class="mono highlight" style="word-break: break-all;">${this.escapeHtml(item.payload)}</td>
                 <td class="mono">[${item.center[0]}, ${item.center[1]}]</td>
                 <td>${Math.round(item.confidence * 100)}%</td>
-                <td><span class="card-badge">${item.source || 'camera'}</span>${actionBadge}</td>
+                <td><span class="card-badge">${item.source || 'camera'}</span></td>
               </tr>
-            `;
-            }).join('');
+            `).join('');
           }
         }
       }

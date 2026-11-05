@@ -1,0 +1,2256 @@
+/**
+ * AUTONOMOUS-DRONE Ground Station & Companion Telemetry Controller
+ * Integrates System Health, Camera Stream, QR Code Detection, Pixhawk MAVLink Telemetry,
+ * Mission State Management, and Geofence Safety Radar.
+ */
+
+class DroneDashboard {
+  constructor() {
+    this.pollInterval = 1500; // 1.5 seconds telemetry loop
+    this.pollTimer = null;
+    this.isCapturing = false;
+    this.streamMode = 'stream'; // 'stream' or 'inspect'
+    this.latestCaptureData = null;
+    this.activeTab = 'overview';
+
+    // State caches
+    this.currentTelemetry = null;
+    this.geofenceConfig = null;
+    this.activeMission = null;
+
+    // Visualizer Mode & History
+    this.mapMode = 'normal'; // 'normal' | 'heatmap'
+    this.coverageData = null;
+    this.flightPathHistory = []; // Ring buffer up to 300 points
+    this.maxBreadcrumbs = 300;
+    this.lastCoverageFetch = 0;
+
+    this.initElements();
+    this.bindEvents();
+    this.start();
+  }
+
+  initElements() {
+    // Navigation
+    this.navButtons = document.querySelectorAll('.nav-item');
+    this.tabPanes = document.querySelectorAll('.tab-pane');
+    this.pageTitle = document.getElementById('pageTitle');
+
+    // Health & System Metrics
+    this.uptimeDisplay = document.getElementById('uptimeDisplay');
+    this.systemHealthBadge = document.getElementById('systemHealthBadge');
+    this.topbarCameraSensor = document.getElementById('topbarCameraSensor');
+    this.topbarMavlinkState = document.getElementById('topbarMavlinkState');
+
+    this.cpuUsageVal = document.getElementById('cpuUsageVal');
+    this.cpuProgressBar = document.getElementById('cpuProgressBar');
+    this.cpuFreqText = document.getElementById('cpuFreqText');
+    this.cpuCoresBadge = document.getElementById('cpuCoresBadge');
+
+    this.tempCelsiusVal = document.getElementById('tempCelsiusVal');
+    this.tempProgressBar = document.getElementById('tempProgressBar');
+    this.tempFahrenheitText = document.getElementById('tempFahrenheitText');
+    this.tempStatusBadge = document.getElementById('tempStatusBadge');
+
+    this.ramUsageVal = document.getElementById('ramUsageVal');
+    this.ramProgressBar = document.getElementById('ramProgressBar');
+    this.ramSubText = document.getElementById('ramSubText');
+    this.ramTotalBadge = document.getElementById('ramTotalBadge');
+
+    // Telemetry Summary Card (Overview)
+    this.batteryPercentVal = document.getElementById('batteryPercentVal');
+    this.batteryProgressBar = document.getElementById('batteryProgressBar');
+    this.batteryVoltsText = document.getElementById('batteryVoltsText');
+    this.telemetryModeBadge = document.getElementById('telemetryModeBadge');
+
+    // Sidebar & Hardware Specs
+    this.sidebarRpiStatus = document.getElementById('sidebarRpiStatus');
+    this.sidebarRpiModel = document.getElementById('sidebarRpiModel');
+    this.rpiHeartbeatDot = document.getElementById('rpiHeartbeatDot');
+    this.hwPlatformBadge = document.getElementById('hwPlatformBadge');
+
+    this.specModel = document.getElementById('specModel');
+    this.specSoc = document.getElementById('specSoc');
+    this.specArch = document.getElementById('specArch');
+    this.specOs = document.getElementById('specOs');
+    this.specSerial = document.getElementById('specSerial');
+    this.specHostname = document.getElementById('specHostname');
+
+    // Camera Station
+    this.cameraStreamImg = document.getElementById('cameraStreamImg');
+    this.cameraLatestPreviewImg = document.getElementById('cameraLatestPreviewImg');
+    this.btnStreamMode = document.getElementById('btnStreamMode');
+    this.btnInspectMode = document.getElementById('btnInspectMode');
+    this.btnCapturePhoto = document.getElementById('btnCapturePhoto');
+    this.captureSpinner = document.getElementById('captureSpinner');
+    this.captureBtnText = document.getElementById('captureBtnText');
+
+    this.hudBackendTag = document.getElementById('hudBackendTag');
+    this.hudResolutionTag = document.getElementById('hudResolutionTag');
+    this.camSensorName = document.getElementById('camSensorName');
+    this.camFlightMode = document.getElementById('camFlightMode');
+    this.camCaptureCount = document.getElementById('camCaptureCount');
+    this.camConnectionState = document.getElementById('camConnectionState');
+
+    // Capture Details Panel
+    this.captureTimestampBadge = document.getElementById('captureTimestampBadge');
+    this.captureThumbnail = document.getElementById('captureThumbnail');
+    this.emptyCaptureMsg = document.getElementById('emptyCaptureMsg');
+    this.metaFilename = document.getElementById('metaFilename');
+    this.metaResolution = document.getElementById('metaResolution');
+    this.metaFileSize = document.getElementById('metaFileSize');
+    this.metaTimestamp = document.getElementById('metaTimestamp');
+    this.metaFilepath = document.getElementById('metaFilepath');
+    this.btnDownloadImage = document.getElementById('btnDownloadImage');
+    this.btnOpenFullRes = document.getElementById('btnOpenFullRes');
+    this.btnTriggerFirstCapture = document.getElementById('btnTriggerFirstCapture');
+
+    // Camera Config Controls
+    this.camConfigResolution = document.getElementById('camConfigResolution');
+    this.camConfigRotation = document.getElementById('camConfigRotation');
+    this.camConfigFps = document.getElementById('camConfigFps');
+    this.btnSaveCameraConfig = document.getElementById('btnSaveCameraConfig');
+    this.galleryTableBody = document.getElementById('galleryTableBody');
+    this.btnRefreshGallery = document.getElementById('btnRefreshGallery');
+
+    // QR Detection Elements
+    this.qrStatusDot = document.getElementById('qrStatusDot');
+    this.btnToggleQRWorker = document.getElementById('btnToggleQRWorker');
+    this.btnClearQRHistory = document.getElementById('btnClearQRHistory');
+    this.qrEngineTag = document.getElementById('qrEngineTag');
+    this.qrScansTag = document.getElementById('qrScansTag');
+    this.qrUploadZone = document.getElementById('qrUploadZone');
+    this.qrFileInput = document.getElementById('qrFileInput');
+    this.qrConfidenceBadge = document.getElementById('qrConfidenceBadge');
+    this.qrPayloadVal = document.getElementById('qrPayloadVal');
+    this.qrBboxVal = document.getElementById('qrBboxVal');
+    this.qrCenterVal = document.getElementById('qrCenterVal');
+    this.qrTimestampVal = document.getElementById('qrTimestampVal');
+    this.qrScoreVal = document.getElementById('qrScoreVal');
+    this.qrActionVal = document.getElementById('qrActionVal');
+    this.btnAssociateQRWithMission = document.getElementById('btnAssociateQRWithMission');
+    this.qrMissionMatchFeedback = document.getElementById('qrMissionMatchFeedback');
+    this.qrHistoryTableBody = document.getElementById('qrHistoryTableBody');
+
+    // Drone Telemetry Elements
+    this.telemetryArmedBadge = document.getElementById('telemetryArmedBadge');
+    this.hudHorizonBar = document.getElementById('hudHorizonBar');
+    this.telemRoll = document.getElementById('telemRoll');
+    this.telemPitch = document.getElementById('telemPitch');
+    this.telemYaw = document.getElementById('telemYaw');
+    this.telemFixBadge = document.getElementById('telemFixBadge');
+    this.telemLat = document.getElementById('telemLat');
+    this.telemLon = document.getElementById('telemLon');
+    this.telemAltRel = document.getElementById('telemAltRel');
+    this.telemAltMsl = document.getElementById('telemAltMsl');
+    this.telemSats = document.getElementById('telemSats');
+    this.telemHdop = document.getElementById('telemHdop');
+    this.telemGroundspeed = document.getElementById('telemGroundspeed');
+    this.telemAirspeed = document.getElementById('telemAirspeed');
+    this.telemClimb = document.getElementById('telemClimb');
+    this.telemHeading = document.getElementById('telemHeading');
+    this.telemVolts = document.getElementById('telemVolts');
+    this.telemAmps = document.getElementById('telemAmps');
+    this.mavlinkConnInput = document.getElementById('mavlinkConnInput');
+    if (this.mavlinkConnInput) {
+      this.mavlinkConnInput.addEventListener('focus', () => { this._mavlinkInputFocused = true; });
+    }
+    this.mavlinkBaudSelect = document.getElementById('mavlinkBaudSelect');
+    this.mavlinkSimSelect = document.getElementById('mavlinkSimSelect');
+    this.btnUpdateMavlinkConn = document.getElementById('btnUpdateMavlinkConn');
+
+    // Mission Control Elements
+    this.activeMissionStateBadge = document.getElementById('activeMissionStateBadge');
+    this.activeMissionTitle = document.getElementById('activeMissionTitle');
+    this.activeMissionDesc = document.getElementById('activeMissionDesc');
+    this.btnValidateActiveMission = document.getElementById('btnValidateActiveMission');
+    this.btnReadyActiveMission = document.getElementById('btnReadyActiveMission');
+    this.btnPauseActiveMission = document.getElementById('btnPauseActiveMission');
+    this.btnCancelActiveMission = document.getElementById('btnCancelActiveMission');
+    this.missionWaypointsTableBody = document.getElementById('missionWaypointsTableBody');
+    this.storedMissionsTableBody = document.getElementById('storedMissionsTableBody');
+    this.btnRefreshMissions = document.getElementById('btnRefreshMissions');
+    this.newMissionId = document.getElementById('newMissionId');
+    this.newMissionName = document.getElementById('newMissionName');
+    this.newMissionWaypoints = document.getElementById('newMissionWaypoints');
+    this.btnSaveNewMission = document.getElementById('btnSaveNewMission');
+
+    // Flight Control & AltHold Elements
+    this.fcConnDot = document.getElementById('fcConnDot');
+    this.fcHardwareModeBadge = document.getElementById('fcHardwareModeBadge');
+    this.fcMavlinkConnBadge = document.getElementById('fcMavlinkConnBadge');
+    this.fcHeartbeatBadge = document.getElementById('fcHeartbeatBadge');
+    this.fcCurrentModeBadge = document.getElementById('fcCurrentModeBadge');
+    this.fcArmedBadge = document.getElementById('fcArmedBadge');
+    this.fcDisabledNotice = document.getElementById('fcDisabledNotice');
+    this.fcStaleNotice = document.getElementById('fcStaleNotice');
+    this.fcModeSelect = document.getElementById('fcModeSelect');
+    this.btnSetFlightMode = document.getElementById('btnSetFlightMode');
+    this.btnOpenArmModal = document.getElementById('btnOpenArmModal');
+    this.btnDisarmDrone = document.getElementById('btnDisarmDrone');
+    this.btnEmergencyRTL = document.getElementById('btnEmergencyRTL');
+    this.fcPrearmBadge = document.getElementById('fcPrearmBadge');
+    this.fcPrearmBox = document.getElementById('fcPrearmBox');
+    this.fcAutopilotName = document.getElementById('fcAutopilotName');
+    this.fcEndpointName = document.getElementById('fcEndpointName');
+    this.btnDisableArmingChecks = document.getElementById('btnDisableArmingChecks');
+    this.fcCommandFeedback = document.getElementById('fcCommandFeedback');
+    this.fcCommandFeedbackText = document.getElementById('fcCommandFeedbackText');
+    this.fcCommandFeedbackTime = document.getElementById('fcCommandFeedbackTime');
+    this.fcLastCmdName = document.getElementById('fcLastCmdName');
+    this.fcLastCmdResult = document.getElementById('fcLastCmdResult');
+    this.fcLastCmdTime = document.getElementById('fcLastCmdTime');
+
+    // Arming Confirmation Modal
+    this.armConfirmModal = document.getElementById('armConfirmModal');
+    this.btnCloseArmModal = document.getElementById('btnCloseArmModal');
+    this.btnCancelArmModal = document.getElementById('btnCancelArmModal');
+    this.btnExecuteArmModal = document.getElementById('btnExecuteArmModal');
+    this.chkArmSafetyConfirm = document.getElementById('chkArmSafetyConfirm');
+    this.modalTargetMode = document.getElementById('modalTargetMode');
+    this.modalHwType = document.getElementById('modalHwType');
+    this.modalPrearmState = document.getElementById('modalPrearmState');
+
+    // Disarming Confirmation Modal
+    this.disarmConfirmModal = document.getElementById('disarmConfirmModal');
+    this.btnCloseDisarmModal = document.getElementById('btnCloseDisarmModal');
+    this.btnCancelDisarmModal = document.getElementById('btnCancelDisarmModal');
+    this.btnExecuteDisarmModal = document.getElementById('btnExecuteDisarmModal');
+    this.chkDisarmSafetyConfirm = document.getElementById('chkDisarmSafetyConfirm');
+    this.modalDisarmMode = document.getElementById('modalDisarmMode');
+    this.modalDisarmArmedState = document.getElementById('modalDisarmArmedState');
+    this.modalDisarmConnState = document.getElementById('modalDisarmConnState');
+
+    this._flightCommandPending = false;
+
+    // Geofence Elements
+    this.geofenceSafetyBadge = document.getElementById('geofenceSafetyBadge');
+    this.geofenceCanvas = document.getElementById('geofenceCanvas');
+    this.btnMapNormal = document.getElementById('btnMapNormal');
+    this.btnMapHeatmap = document.getElementById('btnMapHeatmap');
+    this.mapLegendNormal = document.getElementById('mapLegendNormal');
+    this.mapLegendHeatmap = document.getElementById('mapLegendHeatmap');
+    this.fenceTypeSelect = document.getElementById('fenceTypeSelect');
+    this.fenceCenterLat = document.getElementById('fenceCenterLat');
+    this.fenceCenterLon = document.getElementById('fenceCenterLon');
+    this.fenceRadius = document.getElementById('fenceRadius');
+    this.fenceMinAlt = document.getElementById('fenceMinAlt');
+    this.fenceMaxAlt = document.getElementById('fenceMaxAlt');
+    this.btnSaveGeofence = document.getElementById('btnSaveGeofence');
+
+    // Console Logs
+    this.consoleLogs = document.getElementById('consoleLogs');
+    this.btnClearLogs = document.getElementById('btnClearLogs');
+    this.btnRefreshHealth = document.getElementById('btnRefreshHealth');
+  }
+
+  bindEvents() {
+    // Tab switching
+    this.navButtons.forEach(btn => {
+      btn.addEventListener('click', () => {
+        const targetTab = btn.getAttribute('data-tab');
+        this.switchTab(targetTab);
+      });
+    });
+
+    // Refresh & Action buttons
+    if (this.btnRefreshHealth) {
+      this.btnRefreshHealth.addEventListener('click', () => {
+        this.fetchAll();
+        this.log('Manual telemetry sync completed.', 'info');
+      });
+    }
+
+    if (this.btnCapturePhoto) {
+      this.btnCapturePhoto.addEventListener('click', () => this.triggerCapture());
+    }
+    if (this.btnTriggerFirstCapture) {
+      this.btnTriggerFirstCapture.addEventListener('click', () => this.triggerCapture());
+    }
+
+    if (this.btnStreamMode) this.btnStreamMode.addEventListener('click', () => this.setStreamMode('stream'));
+    if (this.btnInspectMode) this.btnInspectMode.addEventListener('click', () => this.setStreamMode('inspect'));
+
+    if (this.btnClearLogs) {
+      this.btnClearLogs.addEventListener('click', () => {
+        this.consoleLogs.innerHTML = '';
+        this.log('Event console cleared.', 'info');
+      });
+    }
+
+    if (this.btnOpenFullRes) {
+      this.btnOpenFullRes.addEventListener('click', () => {
+        if (this.latestCaptureData && this.latestCaptureData.relative_url) {
+          window.open(this.latestCaptureData.relative_url, '_blank');
+        }
+      });
+    }
+
+    // Camera config save
+    if (this.btnSaveCameraConfig) {
+      this.btnSaveCameraConfig.addEventListener('click', () => this.saveCameraConfig());
+    }
+    if (this.btnRefreshGallery) {
+      this.btnRefreshGallery.addEventListener('click', () => this.fetchCapturesList());
+    }
+
+    // QR Detection Controls
+    if (this.btnToggleQRWorker) {
+      this.btnToggleQRWorker.addEventListener('click', () => this.toggleQRWorker());
+    }
+    if (this.btnClearQRHistory) {
+      this.btnClearQRHistory.addEventListener('click', () => this.clearQRHistory());
+    }
+    if (this.qrUploadZone) {
+      this.qrUploadZone.addEventListener('click', () => this.qrFileInput.click());
+      this.qrFileInput.addEventListener('change', (e) => this.handleQRUpload(e));
+    }
+    if (this.btnAssociateQRWithMission) {
+      this.btnAssociateQRWithMission.addEventListener('click', () => this.associateQRWithMission());
+    }
+
+    // MAVLink Connection update
+    if (this.btnUpdateMavlinkConn) {
+      this.btnUpdateMavlinkConn.addEventListener('click', () => this.updateMavlinkConn());
+    }
+
+    // Mission Control Actions
+    if (this.btnRefreshMissions) {
+      this.btnRefreshMissions.addEventListener('click', () => this.fetchMissions());
+    }
+    if (this.btnSaveNewMission) {
+      this.btnSaveNewMission.addEventListener('click', () => this.createNewMission());
+    }
+    if (this.btnValidateActiveMission) {
+      this.btnValidateActiveMission.addEventListener('click', () => this.transitionActiveMission('VALIDATED'));
+    }
+    if (this.btnReadyActiveMission) {
+      this.btnReadyActiveMission.addEventListener('click', () => this.transitionActiveMission('READY'));
+    }
+    if (this.btnPauseActiveMission) {
+      this.btnPauseActiveMission.addEventListener('click', () => this.transitionActiveMission('PAUSED'));
+    }
+    if (this.btnCancelActiveMission) {
+      this.btnCancelActiveMission.addEventListener('click', () => this.transitionActiveMission('CANCELLED'));
+    }
+
+    // Geofence save
+    if (this.btnSaveGeofence) {
+      this.btnSaveGeofence.addEventListener('click', () => this.saveGeofenceConfig());
+    }
+
+    // Flight Control & AltHold Subsystem Actions
+    if (this.btnSetFlightMode) {
+      this.btnSetFlightMode.addEventListener('click', () => {
+        const mode = this.fcModeSelect ? this.fcModeSelect.value : 'ALT_HOLD';
+        this.setFlightMode(mode);
+      });
+    }
+
+    if (this.btnOpenArmModal) {
+      this.btnOpenArmModal.addEventListener('click', () => this.openArmModal());
+    }
+    if (this.btnDisableArmingChecks) {
+      this.btnDisableArmingChecks.addEventListener('click', () => this.disableArmingChecks());
+    }
+
+    if (this.btnCloseArmModal) {
+      this.btnCloseArmModal.addEventListener('click', () => this.closeArmModal());
+    }
+
+    if (this.btnCancelArmModal) {
+      this.btnCancelArmModal.addEventListener('click', () => this.closeArmModal());
+    }
+
+    if (this.chkArmSafetyConfirm && this.btnExecuteArmModal) {
+      this.chkArmSafetyConfirm.addEventListener('change', () => {
+        this.btnExecuteArmModal.disabled = !this.chkArmSafetyConfirm.checked;
+      });
+    }
+
+    if (this.btnExecuteArmModal) {
+      this.btnExecuteArmModal.addEventListener('click', () => this.executeArm());
+    }
+
+    if (this.btnDisarmDrone) {
+      this.btnDisarmDrone.addEventListener('click', () => this.openDisarmModal());
+    }
+
+    if (this.btnCloseDisarmModal) {
+      this.btnCloseDisarmModal.addEventListener('click', () => this.closeDisarmModal());
+    }
+
+    if (this.btnCancelDisarmModal) {
+      this.btnCancelDisarmModal.addEventListener('click', () => this.closeDisarmModal());
+    }
+
+    if (this.chkDisarmSafetyConfirm && this.btnExecuteDisarmModal) {
+      this.chkDisarmSafetyConfirm.addEventListener('change', () => {
+        this.btnExecuteDisarmModal.disabled = !this.chkDisarmSafetyConfirm.checked;
+      });
+    }
+
+    if (this.btnExecuteDisarmModal) {
+      this.btnExecuteDisarmModal.addEventListener('click', () => this.executeDisarm());
+    }
+
+    if (this.btnEmergencyRTL) {
+      this.btnEmergencyRTL.addEventListener('click', () => this.setFlightMode('RTL'));
+    }
+
+    // Map Mode Toggle
+    if (this.btnMapNormal) {
+      this.btnMapNormal.addEventListener('click', () => this.setMapMode('normal'));
+    }
+    if (this.btnMapHeatmap) {
+      this.btnMapHeatmap.addEventListener('click', () => this.setMapMode('heatmap'));
+    }
+  }
+
+  switchTab(tabName) {
+    this.activeTab = tabName;
+    this.navButtons.forEach(b => {
+      if (b.getAttribute('data-tab') === tabName) {
+        b.classList.add('active');
+      } else {
+        b.classList.remove('active');
+      }
+    });
+
+    this.tabPanes.forEach(pane => {
+      if (pane.id === `pane-${tabName}`) {
+        pane.classList.add('active');
+      } else {
+        pane.classList.remove('active');
+      }
+    });
+
+    const titles = {
+      'overview': 'Mission Overview & Camera Station',
+      'health': 'Companion Computer System Health',
+      'camera': 'Sony IMX477 Camera & Gallery',
+      'qr': 'Computer Vision & QR Detection',
+      'telemetry': 'Pixhawk MAVLink Telemetry HUD',
+      'missions': 'Autonomous Mission Management',
+      'geofence': 'Geofence Boundaries & Navigation Safety'
+    };
+    if (this.pageTitle) {
+      this.pageTitle.textContent = titles[tabName] || 'Ground Station';
+    }
+
+    if (tabName === 'geofence') {
+      if (this.mapMode === 'heatmap') {
+        this.fetchCoverage();
+      }
+      this.renderGeofenceCanvas();
+    }
+  }
+
+  start() {
+    this.log('Connecting to Drone Companion Computer telemetry...', 'info');
+    this.fetchAll();
+
+    // Start periodic background telemetry loop
+    this.pollTimer = setInterval(() => {
+      this.fetchHealth();
+      this.fetchTelemetry();
+      this.fetchFlightStatus();
+      const now = Date.now();
+      if (this.activeTab === 'qr' || (now - (this._lastQrPoll || 0) > 1500)) {
+        this._lastQrPoll = now;
+        this.fetchQRStatus();
+      }
+      if (this.activeTab === 'geofence') {
+        if (this.mapMode === 'heatmap') {
+          if (now - this.lastCoverageFetch > 3000) {
+            this.fetchCoverage();
+          }
+        }
+        this.renderGeofenceCanvas();
+      }
+    }, this.pollInterval);
+  }
+
+  fetchAll() {
+    this.fetchHardware();
+    this.fetchCameraStatus();
+    this.fetchLatestCapture();
+    this.fetchHealth();
+    this.fetchTelemetry();
+    this.fetchFlightStatus();
+    this.fetchQRStatus();
+    this.fetchMissions();
+    this.fetchGeofence();
+    this.fetchCoverage();
+    this.fetchCapturesList();
+  }
+
+  // -------------------------------------------------------------
+  // System Health & Hardware
+  // -------------------------------------------------------------
+  async fetchHealth() {
+    try {
+      const res = await fetch('/api/health');
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const json = await res.json();
+      if (json.status === 'success' && json.data) {
+        this.updateHealthUI(json.data);
+      }
+    } catch (err) {
+      if (this.rpiHeartbeatDot) this.rpiHeartbeatDot.style.backgroundColor = '#ff1744';
+      if (this.systemHealthBadge) {
+        this.systemHealthBadge.className = 'system-badge critical';
+        this.systemHealthBadge.textContent = 'LINK LOST';
+      }
+      if (this.sidebarRpiStatus) {
+        this.sidebarRpiStatus.textContent = 'LINK DISCONNECTED';
+        this.sidebarRpiStatus.style.color = '#ff1744';
+      }
+    }
+  }
+
+  updateHealthUI(data) {
+    if (this.rpiHeartbeatDot) this.rpiHeartbeatDot.style.backgroundColor = '#00e676';
+    const status = data.overall_status || 'HEALTHY';
+    if (this.systemHealthBadge) {
+      this.systemHealthBadge.textContent = `SYSTEM ${status}`;
+      this.systemHealthBadge.className = `system-badge ${status.toLowerCase()}`;
+    }
+    if (this.sidebarRpiStatus) {
+      this.sidebarRpiStatus.textContent = 'PI COMPANION ONLINE';
+      this.sidebarRpiStatus.style.color = '#00e676';
+    }
+
+    if (data.uptime && data.uptime.formatted && this.uptimeDisplay) {
+      this.uptimeDisplay.textContent = data.uptime.formatted;
+    }
+
+    if (data.cpu && this.cpuUsageVal) {
+      const cpuVal = Math.round(data.cpu.usage_percent || 0);
+      this.cpuUsageVal.textContent = cpuVal;
+      this.cpuProgressBar.style.width = `${Math.min(cpuVal, 100)}%`;
+      if (data.cpu.physical_cores && this.cpuCoresBadge) {
+        this.cpuCoresBadge.textContent = `${data.cpu.physical_cores} Cores (${data.cpu.logical_cores}T)`;
+      }
+      if (data.cpu.frequency && data.cpu.frequency.current_mhz && this.cpuFreqText) {
+        this.cpuFreqText.textContent = `Frequency: ${data.cpu.frequency.current_mhz} MHz`;
+      }
+    }
+
+    if (data.temperature && this.tempCelsiusVal) {
+      const tempC = data.temperature.celsius;
+      this.tempCelsiusVal.textContent = tempC.toFixed(1);
+      const tempPct = Math.min(Math.max((tempC / 90) * 100, 0), 100);
+      this.tempProgressBar.style.width = `${tempPct}%`;
+      const statusStr = data.temperature.status || 'NORMAL';
+      this.tempStatusBadge.textContent = statusStr;
+      this.tempStatusBadge.className = `card-badge ${statusStr.toLowerCase()}`;
+      if (this.tempFahrenheitText) {
+        this.tempFahrenheitText.textContent = `${data.temperature.fahrenheit}°F | Limit: 85°C`;
+      }
+    }
+
+    if (data.memory && this.ramUsageVal) {
+      const ramVal = Math.round(data.memory.usage_percent || 0);
+      this.ramUsageVal.textContent = ramVal;
+      this.ramProgressBar.style.width = `${ramVal}%`;
+      if (this.ramTotalBadge) this.ramTotalBadge.textContent = `${data.memory.total_gb} GB`;
+      if (this.ramSubText) this.ramSubText.textContent = `${data.memory.used_gb} / ${data.memory.total_gb} GB Used`;
+    }
+  }
+
+  async fetchHardware() {
+    try {
+      const res = await fetch('/api/health/hardware');
+      if (!res.ok) return;
+      const json = await res.json();
+      if (json.status === 'success' && json.data) {
+        const d = json.data;
+        if (this.specModel) this.specModel.textContent = d.device?.model || 'Unknown';
+        if (this.specSoc) this.specSoc.textContent = d.device?.soc || 'Unknown';
+        if (this.specArch) this.specArch.textContent = d.cpu?.architecture || 'Unknown';
+        if (this.specOs) this.specOs.textContent = `${d.os?.system} ${d.os?.release}`;
+        if (this.specSerial) this.specSerial.textContent = d.device?.serial_number || 'N/A';
+        if (this.specHostname) this.specHostname.textContent = d.device?.hostname || 'drone-rpi';
+        if (this.sidebarRpiModel) this.sidebarRpiModel.textContent = d.device?.model || 'Raspberry Pi 4';
+        if (this.hwPlatformBadge) this.hwPlatformBadge.textContent = d.is_raspberry_pi ? 'Genuine RPi 4' : 'Simulated Pi 4';
+      }
+    } catch (err) {
+      console.error('Error fetching hardware info:', err);
+    }
+  }
+
+  // -------------------------------------------------------------
+  // Pixhawk MAVLink Telemetry (Milestone 03)
+  // -------------------------------------------------------------
+  async fetchTelemetry() {
+    try {
+      const res = await fetch('/api/telemetry/current');
+      if (!res.ok) return;
+      const json = await res.json();
+      if (json.status === 'success' && json.data) {
+        this.currentTelemetry = json.data;
+        this.updateTelemetryUI(json.data);
+        if (json.data.connected && json.data.latitude && json.data.longitude &&
+            (json.data.latitude !== 0.0 || json.data.longitude !== 0.0)) {
+          this.recordBreadcrumb(json.data.latitude, json.data.longitude, json.data.altitude_relative_m);
+        }
+      }
+    } catch (err) {
+      console.error('Error fetching telemetry:', err);
+    }
+  }
+
+  updateTelemetryUI(t) {
+    if (this.topbarMavlinkState) {
+      this.topbarMavlinkState.textContent = t.connected ? (t.is_simulated ? 'SIMULATED' : 'ONLINE') : 'OFFLINE';
+      this.topbarMavlinkState.className = t.connected ? 'chip-val highlight' : 'chip-val';
+    }
+
+    if (this.telemetryModeBadge) this.telemetryModeBadge.textContent = t.flight_mode;
+    if (this.camFlightMode) this.camFlightMode.textContent = t.flight_mode;
+    if (this.batteryPercentVal) this.batteryPercentVal.textContent = t.battery_remaining_percent;
+    if (this.batteryProgressBar) this.batteryProgressBar.style.width = `${t.battery_remaining_percent}%`;
+    if (this.batteryVoltsText) this.batteryVoltsText.textContent = `${t.battery_voltage_v} V | Fix: ${t.gps_fix_name} (${t.satellites_visible} Sats)`;
+
+    if (this.telemetryArmedBadge) {
+      this.telemetryArmedBadge.textContent = t.armed ? 'ARMED' : 'DISARMED';
+      this.telemetryArmedBadge.className = t.armed ? 'card-badge highlight' : 'card-badge normal';
+    }
+
+    if (this.hudHorizonBar) {
+      this.hudHorizonBar.style.transform = `rotate(${-t.roll_deg}deg) translateY(${t.pitch_deg * 1.5}px)`;
+    }
+    if (this.telemRoll) this.telemRoll.textContent = `${t.roll_deg}°`;
+    if (this.telemPitch) this.telemPitch.textContent = `${t.pitch_deg}°`;
+    if (this.telemYaw) this.telemYaw.textContent = `${t.yaw_deg}°`;
+
+    if (this.telemLat) this.telemLat.textContent = (typeof t.latitude === 'number' && Number.isFinite(t.latitude)) ? t.latitude.toFixed(6) : '--';
+    if (this.telemLon) this.telemLon.textContent = (typeof t.longitude === 'number' && Number.isFinite(t.longitude)) ? t.longitude.toFixed(6) : '--';
+    if (this.telemAltRel) this.telemAltRel.textContent = `${t.altitude_relative_m} m`;
+    if (this.telemAltMsl) this.telemAltMsl.textContent = `${t.altitude_msl_m} m`;
+    if (this.telemSats) this.telemSats.textContent = t.satellites_visible;
+    if (this.telemHdop) this.telemHdop.textContent = t.hdop;
+
+    if (this.telemGroundspeed) this.telemGroundspeed.textContent = `${t.groundspeed_m_s} m/s`;
+    if (this.telemAirspeed) this.telemAirspeed.textContent = `${t.airspeed_m_s} m/s`;
+    if (this.telemClimb) this.telemClimb.textContent = `${t.climb_rate_m_s} m/s`;
+    if (this.telemHeading) this.telemHeading.textContent = `${t.heading_deg}°`;
+    if (this.telemVolts) this.telemVolts.textContent = `${t.battery_voltage_v} V`;
+    if (this.telemAmps) this.telemAmps.textContent = `${t.battery_current_a} A`;
+  }
+
+  async updateMavlinkConn() {
+    const connStr = this.mavlinkConnInput.value.trim();
+    const baud = parseInt(this.mavlinkBaudSelect.value, 10);
+    const sim = this.mavlinkSimSelect.value === 'true';
+
+    try {
+      const res = await fetch('/api/telemetry/connection', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ connection_string: connStr, baudrate: baud, simulate: sim })
+      });
+      const json = await res.json();
+      if (res.ok) {
+        this.log(`MAVLink connection updated: ${connStr} (Sim: ${sim})`, 'success');
+        this.fetchTelemetry();
+        this.fetchFlightStatus();
+      }
+    } catch (err) {
+      this.log(`Failed updating MAVLink connection: ${err.message}`, 'error');
+    }
+  }
+
+  // -------------------------------------------------------------
+  // Flight Control & AltHold Subsystem
+  // -------------------------------------------------------------
+  async fetchFlightStatus() {
+    try {
+      const res = await fetch('/api/flight/status');
+      if (!res.ok) return;
+      const json = await res.json();
+      if (json.status === 'success' && json.data) {
+        this.updateFlightUI(json.data);
+      }
+    } catch (err) {
+      console.error('Error fetching flight status:', err);
+    }
+  }
+
+  updateFlightUI(d) {
+    // 1. Interlock notice
+    if (this.fcDisabledNotice) {
+      if (d.flight_control_enabled) {
+        this.fcDisabledNotice.classList.add('hidden');
+      } else {
+        this.fcDisabledNotice.classList.remove('hidden');
+      }
+    }
+
+    // 2. Hardware Mode Badge: physical vs simulation
+    if (this.fcHardwareModeBadge) {
+      if (d.is_simulated) {
+        this.fcHardwareModeBadge.textContent = 'SIMULATION';
+        this.fcHardwareModeBadge.className = 'card-badge highlight';
+      } else {
+        this.fcHardwareModeBadge.textContent = 'PHYSICAL HARDWARE (PIXHAWK)';
+        this.fcHardwareModeBadge.className = 'card-badge normal';
+      }
+    }
+
+    // 3. Heartbeat & Connection Dot & MAVLink Conn Badge
+    const isConn = d.connected;
+    const isStale = d.is_stale;
+    const hbAge = d.heartbeat_age_seconds !== undefined ? Number(d.heartbeat_age_seconds).toFixed(1) : '--';
+
+    if (this.fcMavlinkConnBadge) {
+      if (isConn) {
+        this.fcMavlinkConnBadge.textContent = 'MAVLINK: CONNECTED';
+        this.fcMavlinkConnBadge.className = 'card-badge normal';
+      } else {
+        this.fcMavlinkConnBadge.textContent = 'MAVLINK: DISCONNECTED';
+        this.fcMavlinkConnBadge.className = 'card-badge';
+      }
+    }
+
+    if (this.fcCurrentModeBadge) {
+      this.fcCurrentModeBadge.textContent = `MODE: ${d.flight_mode || '--'}`;
+    }
+
+    if (this.fcStaleNotice) {
+      if (isStale && isConn) {
+        this.fcStaleNotice.classList.remove('hidden');
+      } else {
+        this.fcStaleNotice.classList.add('hidden');
+      }
+    }
+
+    if (this.fcConnDot) {
+      if (!isConn) {
+        this.fcConnDot.style.backgroundColor = 'var(--accent-red)';
+      } else if (isStale) {
+        this.fcConnDot.style.backgroundColor = 'var(--accent-amber)';
+      } else {
+        this.fcConnDot.style.backgroundColor = 'var(--accent-green)';
+      }
+    }
+
+    if (this.fcHeartbeatBadge) {
+      if (!isConn) {
+        this.fcHeartbeatBadge.textContent = 'NO HEARTBEAT';
+        this.fcHeartbeatBadge.className = 'card-badge';
+      } else if (isStale) {
+        this.fcHeartbeatBadge.textContent = `STALE (${hbAge}s)`;
+        this.fcHeartbeatBadge.className = 'card-badge highlight';
+      } else {
+        this.fcHeartbeatBadge.textContent = `HB: ${hbAge}s`;
+        this.fcHeartbeatBadge.className = 'card-badge normal';
+      }
+    }
+
+    // 4. Armed Status & Button Interlocks
+    if (this.fcArmedBadge) {
+      this.fcArmedBadge.textContent = d.armed ? 'ARMED' : 'DISARMED';
+      this.fcArmedBadge.className = d.armed ? 'card-badge highlight' : 'card-badge normal';
+    }
+
+    // ARM & DISARM button rules:
+    // Concurrency lock: disable both if command is pending
+    if (this._flightCommandPending) {
+      if (this.btnOpenArmModal) this.btnOpenArmModal.disabled = true;
+      if (this.btnDisarmDrone) this.btnDisarmDrone.disabled = true;
+    } else {
+      if (this.btnOpenArmModal) {
+        const armAllowed = d.flight_control_enabled && isConn && !isStale && !d.armed;
+        this.btnOpenArmModal.disabled = !armAllowed;
+        if (!d.flight_control_enabled) {
+          this.btnOpenArmModal.title = 'Flight control is disabled in settings (FLIGHT_CONTROL_ENABLED=false)';
+        } else if (!isConn || isStale) {
+          this.btnOpenArmModal.title = 'No active/fresh MAVLink heartbeat from Pixhawk';
+        } else if (d.armed) {
+          this.btnOpenArmModal.title = 'Vehicle is already armed';
+        } else {
+          this.btnOpenArmModal.title = 'Click to open confirmation modal and arm vehicle in selected mode';
+        }
+      }
+
+      if (this.btnDisarmDrone) {
+        const disarmAllowed = d.flight_control_enabled && isConn && d.armed;
+        this.btnDisarmDrone.disabled = !disarmAllowed;
+        if (!d.flight_control_enabled) {
+          this.btnDisarmDrone.title = 'Flight control is disabled in settings (FLIGHT_CONTROL_ENABLED=false)';
+        } else if (!isConn) {
+          this.btnDisarmDrone.title = 'Flight controller not connected';
+        } else if (!d.armed) {
+          this.btnDisarmDrone.title = 'Vehicle is already disarmed';
+        } else {
+          this.btnDisarmDrone.title = 'Click to open confirmation modal and disarm motor outputs';
+        }
+      }
+    }
+
+    // Mode select synchronization
+    if (this.fcModeSelect && d.flight_mode && document.activeElement !== this.fcModeSelect) {
+      const exists = Array.from(this.fcModeSelect.options).some(o => o.value === d.flight_mode);
+      if (exists) {
+        this.fcModeSelect.value = d.flight_mode;
+      }
+    }
+
+    // 5. Pre-Arm Messages & Status
+    if (this.fcPrearmBadge) {
+      const pStatus = d.prearm_status || 'STANDBY';
+      this.fcPrearmBadge.textContent = pStatus;
+      if (pStatus === 'CHECKS_FAILED') {
+        this.fcPrearmBadge.className = 'card-badge highlight';
+      } else if (pStatus === 'PASSED' || pStatus === 'READY') {
+        this.fcPrearmBadge.className = 'card-badge normal';
+      } else {
+        this.fcPrearmBadge.className = 'card-badge';
+      }
+    }
+
+    if (this.fcPrearmBox && d.prearm_messages && d.prearm_messages.length > 0) {
+      this.fcPrearmBox.innerHTML = '';
+      d.prearm_messages.forEach(msg => {
+        const div = document.createElement('div');
+        const isWarn = msg.toLowerCase().includes('fail') || msg.toLowerCase().includes('bad') || msg.toLowerCase().includes('not');
+        div.className = `prearm-msg-item ${isWarn ? 'warn' : 'ok'}`;
+        div.textContent = msg;
+        this.fcPrearmBox.appendChild(div);
+      });
+    }
+
+    // 6. Autopilot Info & Endpoint
+    if (this.fcAutopilotName) {
+      this.fcAutopilotName.textContent = d.autopilot_type || 'ArduPilot ArduCopter';
+    }
+    if (this.fcEndpointName && d.connection_string) {
+      this.fcEndpointName.textContent = d.connection_string;
+    }
+    if (this.mavlinkConnInput && !this._mavlinkInputFocused && d.connection_string) {
+      this.mavlinkConnInput.value = d.connection_string;
+    }
+
+    // 7. Last Command Audit Display
+    if (d.last_command) {
+      if (this.fcLastCmdName) this.fcLastCmdName.textContent = d.last_command.command || '--';
+      if (this.fcLastCmdResult) {
+        const ok = d.last_command.success;
+        this.fcLastCmdResult.textContent = ok ? 'SUCCESS' : 'REJECTED';
+        this.fcLastCmdResult.style.color = ok ? 'var(--accent-green)' : 'var(--accent-red)';
+      }
+      if (this.fcLastCmdTime && d.last_command.timestamp) {
+        const t = new Date(d.last_command.timestamp * 1000);
+        this.fcLastCmdTime.textContent = t.toTimeString().split(' ')[0];
+      }
+    }
+  }
+
+  async setFlightMode(targetMode) {
+    if (!targetMode) return;
+    this.updateCommandFeedback(`Requesting flight mode: ${targetMode}...`, 'pending');
+    try {
+      const res = await fetch('/api/flight/mode', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode: targetMode })
+      });
+      const json = await res.json();
+      if (res.ok && json.status === 'success') {
+        this.updateCommandFeedback(`Mode successfully switched to ${targetMode}`, 'accepted');
+        this.log(`Flight Mode changed to ${targetMode}`, 'success');
+        this.fetchFlightStatus();
+      } else {
+        const msg = json.message || 'Mode change rejected';
+        this.updateCommandFeedback(`Mode change failed: ${msg}`, 'rejected');
+        this.log(`Mode change failed: ${msg}`, 'error');
+      }
+    } catch (err) {
+      this.updateCommandFeedback(`Communication error: ${err.message}`, 'rejected');
+      this.log(`Flight mode error: ${err.message}`, 'error');
+    }
+  }
+
+  openArmModal() {
+    if (!this.armConfirmModal) return;
+    const selectedMode = this.currentTelemetry?.flight_mode || (this.fcModeSelect ? this.fcModeSelect.value : 'STABILIZE');
+    if (this.modalTargetMode) this.modalTargetMode.textContent = selectedMode;
+    if (this.modalHwType) {
+      const isSim = this.fcHardwareModeBadge && this.fcHardwareModeBadge.textContent.includes('SIMULATION');
+      this.modalHwType.textContent = isSim ? 'Simulated Virtual' : 'Physical Pixhawk 2.4.8 Hardware';
+    }
+    if (this.modalPrearmState) {
+      this.modalPrearmState.textContent = this.fcPrearmBadge ? this.fcPrearmBadge.textContent : 'CHECKING';
+    }
+    if (this.chkArmSafetyConfirm) this.chkArmSafetyConfirm.checked = false;
+    if (this.btnExecuteArmModal) this.btnExecuteArmModal.disabled = true;
+    this.armConfirmModal.classList.remove('hidden');
+  }
+
+  closeArmModal() {
+    if (this.armConfirmModal) this.armConfirmModal.classList.add('hidden');
+  }
+
+  openDisarmModal() {
+    if (!this.disarmConfirmModal) return;
+    const currentMode = this.currentTelemetry?.flight_mode || (this.fcModeSelect ? this.fcModeSelect.value : 'STABILIZE');
+    if (this.modalDisarmMode) this.modalDisarmMode.textContent = currentMode;
+    if (this.modalDisarmArmedState) this.modalDisarmArmedState.textContent = 'ARMED';
+    if (this.modalDisarmConnState) {
+      const isSim = this.fcHardwareModeBadge && this.fcHardwareModeBadge.textContent.includes('SIMULATION');
+      this.modalDisarmConnState.textContent = isSim ? 'Simulated Virtual' : 'Physical Pixhawk Hardware';
+    }
+    if (this.chkDisarmSafetyConfirm) this.chkDisarmSafetyConfirm.checked = false;
+    if (this.btnExecuteDisarmModal) this.btnExecuteDisarmModal.disabled = true;
+    this.disarmConfirmModal.classList.remove('hidden');
+  }
+
+  closeDisarmModal() {
+    if (this.disarmConfirmModal) this.disarmConfirmModal.classList.add('hidden');
+  }
+
+  async executeArm() {
+    if (this._flightCommandPending) return;
+    this._flightCommandPending = true;
+    this.closeArmModal();
+    if (this.btnOpenArmModal) this.btnOpenArmModal.disabled = true;
+    if (this.btnDisarmDrone) this.btnDisarmDrone.disabled = true;
+
+    const mode = this.currentTelemetry?.flight_mode || (this.fcModeSelect ? this.fcModeSelect.value : 'STABILIZE');
+    this.updateCommandFeedback(`ARM command sent to Pixhawk (${mode}). Evaluating pre-arm checks & awaiting heartbeat...`, 'pending');
+
+    try {
+      const res = await fetch('/api/flight/arm', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Operator-Action': 'ARM'
+        },
+        body: JSON.stringify({
+          confirm: true,
+          operator: 'GCS-OPERATOR',
+          operator_action: 'EXPLICIT_ARM'
+        })
+      });
+
+      const json = await res.json();
+      if (!res.ok || json.status !== 'success') {
+        const errMsg = json.message || 'Arming rejected by Pixhawk firmware';
+        this.updateCommandFeedback(`Arming REJECTED: ${errMsg}`, 'rejected');
+        this.log(`Arming REJECTED: ${errMsg}`, 'error');
+        return;
+      }
+
+      // Requirement: Never display success merely because an HTTP request succeeded.
+      // Verify actual Pixhawk HEARTBEAT state.
+      this.updateCommandFeedback('Command accepted by backend. Verifying Pixhawk HEARTBEAT armed flag...', 'pending');
+      let verifiedArmed = false;
+      for (let attempt = 0; attempt < 8; attempt++) {
+        await new Promise(r => setTimeout(r, 500));
+        const statusRes = await fetch('/api/flight/status');
+        if (statusRes.ok) {
+          const statusJson = await statusRes.json();
+          if (statusJson.data) {
+            this.updateFlightUI(statusJson.data);
+            if (statusJson.data.armed === true) {
+              verifiedArmed = true;
+              break;
+            }
+          }
+        }
+      }
+
+      if (verifiedArmed) {
+        this.updateCommandFeedback(`Pixhawk confirmed ARMED via heartbeat in ${mode}`, 'accepted');
+        this.log(`Pixhawk confirmed ARMED via heartbeat in ${mode}`, 'success');
+      } else {
+        const latestErr = (json.data && json.data.message) || 'Heartbeat armed bit not confirmed within timeout. Verify safety switch and pre-arm checks.';
+        this.updateCommandFeedback(`Arming unconfirmed: ${latestErr}`, 'rejected');
+        this.log(`Arming unconfirmed: ${latestErr}`, 'error');
+      }
+    } catch (err) {
+      this.updateCommandFeedback(`Network error during ARM request: ${err.message}`, 'rejected');
+      this.log(`Arming network error: ${err.message}`, 'error');
+    } finally {
+      this._flightCommandPending = false;
+      await this.fetchFlightStatus();
+    }
+  }
+
+  async executeDisarm() {
+    if (this._flightCommandPending) return;
+    this._flightCommandPending = true;
+    this.closeDisarmModal();
+    if (this.btnOpenArmModal) this.btnOpenArmModal.disabled = true;
+    if (this.btnDisarmDrone) this.btnDisarmDrone.disabled = true;
+
+    this.updateCommandFeedback('DISARM command sent to Pixhawk... awaiting heartbeat confirmation...', 'pending');
+
+    try {
+      const res = await fetch('/api/flight/disarm', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Operator-Action': 'DISARM'
+        },
+        body: JSON.stringify({
+          confirm: true,
+          operator: 'GCS-OPERATOR',
+          operator_action: 'EXPLICIT_DISARM'
+        })
+      });
+
+      const json = await res.json();
+      if (!res.ok || json.status !== 'success') {
+        const errMsg = json.message || 'Disarm rejected by Pixhawk';
+        this.updateCommandFeedback(`Disarm failed: ${errMsg}`, 'rejected');
+        this.log(`Disarm failed: ${errMsg}`, 'error');
+        return;
+      }
+
+      // Requirement: Never display success merely because an HTTP request succeeded.
+      // Verify actual Pixhawk HEARTBEAT state.
+      this.updateCommandFeedback('Command accepted by backend. Verifying Pixhawk HEARTBEAT disarmed flag...', 'pending');
+      let verifiedDisarmed = false;
+      for (let attempt = 0; attempt < 8; attempt++) {
+        await new Promise(r => setTimeout(r, 500));
+        const statusRes = await fetch('/api/flight/status');
+        if (statusRes.ok) {
+          const statusJson = await statusRes.json();
+          if (statusJson.data) {
+            this.updateFlightUI(statusJson.data);
+            if (statusJson.data.armed === false) {
+              verifiedDisarmed = true;
+              break;
+            }
+          }
+        }
+      }
+
+      if (verifiedDisarmed) {
+        this.updateCommandFeedback('Pixhawk confirmed DISARMED via heartbeat', 'accepted');
+        this.log('Pixhawk confirmed DISARMED via heartbeat', 'info');
+      } else {
+        this.updateCommandFeedback('Disarm unconfirmed: Heartbeat still reports armed state.', 'rejected');
+        this.log('Disarm unconfirmed: Heartbeat still reports armed', 'error');
+      }
+    } catch (err) {
+      this.updateCommandFeedback(`Network error during DISARM: ${err.message}`, 'rejected');
+      this.log(`Disarm network error: ${err.message}`, 'error');
+    } finally {
+      this._flightCommandPending = false;
+      await this.fetchFlightStatus();
+    }
+  }
+
+  async disableArmingChecks() {
+    this.updateCommandFeedback('Sending MAVLink parameter updates to Pixhawk (ARMING_CHECK=0, FENCE_ENABLE=0, BRD_SAFETYENABLE=0)...', 'pending');
+    try {
+      const res = await fetch('/api/flight/disable-arming-checks', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+      });
+      const json = await res.json();
+      if (res.ok && json.status === 'success') {
+        this.updateCommandFeedback('Pre-arm & safety switch checks disabled on Pixhawk (Bench Mode active)', 'accepted');
+        this.log('Indoor bench parameters applied on Pixhawk (ARMING_CHECK=0, FENCE_ENABLE=0, BRD_SAFETYENABLE=0)', 'success');
+        this.fetchFlightStatus();
+      } else {
+        const msg = json.message || 'Failed applying bench parameters';
+        this.updateCommandFeedback(`Failed: ${msg}`, 'rejected');
+        this.log(`Bench mode error: ${msg}`, 'error');
+      }
+    } catch (err) {
+      this.updateCommandFeedback(`Network error: ${err.message}`, 'rejected');
+      this.log(`Error: ${err.message}`, 'error');
+    }
+  }
+
+  updateCommandFeedback(msg, status) {
+    if (this.fcCommandFeedbackText) this.fcCommandFeedbackText.textContent = msg;
+    if (this.fcCommandFeedbackTime) {
+      const now = new Date();
+      this.fcCommandFeedbackTime.textContent = now.toTimeString().split(' ')[0];
+    }
+    if (this.fcCommandFeedback) {
+      if (status === 'accepted') {
+        this.fcCommandFeedback.style.borderColor = 'var(--accent-green)';
+        this.fcCommandFeedback.style.backgroundColor = 'rgba(0, 230, 118, 0.1)';
+      } else if (status === 'rejected') {
+        this.fcCommandFeedback.style.borderColor = 'var(--accent-red)';
+        this.fcCommandFeedback.style.backgroundColor = 'rgba(255, 23, 68, 0.1)';
+      } else if (status === 'pending') {
+        this.fcCommandFeedback.style.borderColor = 'var(--accent-cyan)';
+        this.fcCommandFeedback.style.backgroundColor = 'rgba(0, 229, 255, 0.1)';
+      }
+    }
+  }
+
+  // -------------------------------------------------------------
+  // Camera & Image Capture
+  // -------------------------------------------------------------
+  async fetchCameraStatus() {
+    try {
+      const res = await fetch('/api/camera/status');
+      if (!res.ok) return;
+      const json = await res.json();
+      if (json.status === 'success' && json.data) {
+        const cam = json.data;
+        if (this.camSensorName) this.camSensorName.textContent = cam.sensor_model || 'Sony IMX477';
+        if (this.topbarCameraSensor) this.topbarCameraSensor.textContent = cam.sensor_model || 'Sony IMX477';
+        if (this.camConnectionState) {
+          this.camConnectionState.textContent = cam.connected ? 'ONLINE' : 'OFFLINE';
+          this.camConnectionState.className = cam.connected ? 'meta-value status-online' : 'meta-value status-offline';
+        }
+        if (this.hudBackendTag) this.hudBackendTag.textContent = `BACKEND: ${cam.active_backend.toUpperCase()}`;
+        if (cam.config && this.hudResolutionTag) {
+          this.hudResolutionTag.textContent = `${cam.config.width}x${cam.config.height}`;
+        }
+      }
+    } catch (err) {
+      console.error('Error fetching camera status:', err);
+    }
+  }
+
+  async fetchLatestCapture() {
+    try {
+      const res = await fetch('/api/camera/latest');
+      if (!res.ok) return;
+      const json = await res.json();
+      if (json.status === 'success' && json.data) {
+        this.updateLatestCaptureUI(json.data);
+      }
+    } catch (err) {
+      console.error('Error fetching latest capture:', err);
+    }
+  }
+
+  async triggerCapture() {
+    if (this.isCapturing) return;
+    this.isCapturing = true;
+    if (this.btnCapturePhoto) this.btnCapturePhoto.disabled = true;
+    if (this.captureSpinner) this.captureSpinner.classList.remove('hidden');
+    if (this.captureBtnText) this.captureBtnText.textContent = 'Capturing...';
+    this.log('Triggered image capture request to companion camera...', 'info');
+
+    try {
+      const res = await fetch('/api/camera/capture', { method: 'POST' });
+      const json = await res.json();
+      if (res.ok && json.status === 'success') {
+        const capture = json.data;
+        this.log(`Snapshot saved: ${capture.filename} (${capture.width}x${capture.height}, ${capture.size_kb} KB)`, 'success');
+        this.updateLatestCaptureUI(capture);
+        this.fetchCapturesList();
+        if (this.streamMode === 'inspect' && this.cameraLatestPreviewImg) {
+          this.cameraLatestPreviewImg.src = `${capture.relative_url}?t=${Date.now()}`;
+        }
+      } else {
+        throw new Error(json.message || 'Capture failed');
+      }
+    } catch (err) {
+      this.log(`Image capture error: ${err.message}`, 'error');
+    } finally {
+      this.isCapturing = false;
+      if (this.btnCapturePhoto) this.btnCapturePhoto.disabled = false;
+      if (this.captureSpinner) this.captureSpinner.classList.add('hidden');
+      if (this.captureBtnText) this.captureBtnText.textContent = '📸 Capture Image';
+    }
+  }
+
+  updateLatestCaptureUI(data) {
+    if (!data) return;
+    this.latestCaptureData = data;
+    if (this.emptyCaptureMsg) this.emptyCaptureMsg.classList.add('hidden');
+    if (this.captureThumbnail) {
+      this.captureThumbnail.classList.remove('hidden');
+      this.captureThumbnail.src = `${data.relative_url}?t=${Date.now()}`;
+    }
+
+    if (this.metaFilename) this.metaFilename.textContent = data.filename;
+    if (this.metaResolution) this.metaResolution.textContent = `${data.width} × ${data.height} px`;
+    if (this.metaFileSize) this.metaFileSize.textContent = `${data.size_kb} KB`;
+    if (this.metaTimestamp) this.metaTimestamp.textContent = data.iso_time ? data.iso_time.replace('T', ' ').substring(0, 19) : '--';
+    if (this.metaFilepath) this.metaFilepath.textContent = data.filepath;
+
+    if (this.btnDownloadImage) {
+      this.btnDownloadImage.href = data.relative_url;
+      this.btnDownloadImage.classList.remove('disabled');
+    }
+    if (this.btnOpenFullRes) this.btnOpenFullRes.classList.remove('disabled');
+  }
+
+  setStreamMode(mode) {
+    this.streamMode = mode;
+    if (mode === 'stream') {
+      if (this.btnStreamMode) this.btnStreamMode.classList.add('active');
+      if (this.btnInspectMode) this.btnInspectMode.classList.remove('active');
+      if (this.cameraStreamImg) this.cameraStreamImg.classList.remove('hidden');
+      if (this.cameraLatestPreviewImg) this.cameraLatestPreviewImg.classList.add('hidden');
+    } else {
+      if (this.btnStreamMode) this.btnStreamMode.classList.remove('active');
+      if (this.btnInspectMode) this.btnInspectMode.classList.add('active');
+      if (this.cameraStreamImg) this.cameraStreamImg.classList.add('hidden');
+      if (this.cameraLatestPreviewImg) {
+        this.cameraLatestPreviewImg.classList.remove('hidden');
+        if (this.latestCaptureData && this.latestCaptureData.relative_url) {
+          this.cameraLatestPreviewImg.src = `${this.latestCaptureData.relative_url}?t=${Date.now()}`;
+        }
+      }
+    }
+  }
+
+  async saveCameraConfig() {
+    const resVal = this.camConfigResolution.value.split('x');
+    const rotVal = parseInt(this.camConfigRotation.value, 10);
+    const fpsVal = parseInt(this.camConfigFps.value, 10);
+
+    try {
+      const res = await fetch('/api/camera/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          width: parseInt(resVal[0], 10),
+          height: parseInt(resVal[1], 10),
+          rotation: rotVal,
+          framerate: fpsVal
+        })
+      });
+      const json = await res.json();
+      if (res.ok) {
+        this.log('Camera configuration applied successfully.', 'success');
+        this.fetchCameraStatus();
+      }
+    } catch (err) {
+      this.log(`Failed updating camera config: ${err.message}`, 'error');
+    }
+  }
+
+  async fetchCapturesList() {
+    try {
+      const res = await fetch('/api/camera/list?limit=10');
+      if (!res.ok) return;
+      const json = await res.json();
+      if (json.status === 'success' && this.galleryTableBody) {
+        if (!json.data || json.data.length === 0) {
+          this.galleryTableBody.innerHTML = '<tr><td colspan="4" style="text-align: center; color: var(--text-muted);">No snapshots saved.</td></tr>';
+          return;
+        }
+        this.galleryTableBody.innerHTML = json.data.map(item => `
+          <tr>
+            <td class="mono">${this.escapeHtml(item.filename)}</td>
+            <td class="mono">${item.iso_time.replace('T', ' ').substring(0, 19)}</td>
+            <td>${item.size_kb} KB</td>
+            <td>
+              <a href="${item.relative_url}" download class="btn btn-ghost btn-xs">Download</a>
+            </td>
+          </tr>
+        `).join('');
+      }
+    } catch (err) {
+      console.error('Error fetching gallery:', err);
+    }
+  }
+
+  // -------------------------------------------------------------
+  // Computer Vision & QR Detection (Milestone 02)
+  // -------------------------------------------------------------
+  async fetchQRStatus() {
+    try {
+      const [statusRes, latestRes, historyRes] = await Promise.all([
+        fetch('/api/vision/qr/status'),
+        fetch('/api/vision/qr/latest'),
+        fetch('/api/vision/qr/history?limit=10')
+      ]);
+
+      if (statusRes.ok) {
+        const sJson = await statusRes.json();
+        const isRunning = sJson.data.running;
+        if (this.qrStatusDot) {
+          this.qrStatusDot.style.backgroundColor = isRunning ? 'var(--accent-green)' : 'var(--accent-red)';
+        }
+        if (this.btnToggleQRWorker) {
+          this.btnToggleQRWorker.textContent = isRunning ? '⏹ Stop QR Detection' : '▶ Start QR Detection';
+          this.btnToggleQRWorker.className = isRunning ? 'btn btn-secondary btn-sm' : 'btn btn-primary btn-sm';
+        }
+        if (this.qrEngineTag) this.qrEngineTag.textContent = `SCANNER: ${isRunning ? 'ACTIVE' : 'IDLE'}`;
+        if (this.qrScansTag) this.qrScansTag.textContent = `SCANS: ${sJson.data.total_scans}`;
+      }
+
+      if (latestRes.ok) {
+        const lJson = await latestRes.json();
+        if (lJson.data) {
+          const d = lJson.data;
+          if (this.qrPayloadVal) this.qrPayloadVal.textContent = d.payload;
+          if (this.qrConfidenceBadge) this.qrConfidenceBadge.textContent = `${Math.round(d.confidence * 100)}% Conf`;
+          if (this.qrBboxVal) this.qrBboxVal.textContent = `(${d.bbox.x}, ${d.bbox.y}) ${d.bbox.width}x${d.bbox.height}`;
+          if (this.qrCenterVal) this.qrCenterVal.textContent = `[${d.center[0]}, ${d.center[1]}]`;
+          if (this.qrTimestampVal) this.qrTimestampVal.textContent = d.iso_time ? d.iso_time.replace('T', ' ').substring(0, 19) : '--';
+          if (this.qrScoreVal) this.qrScoreVal.textContent = `${d.confidence}`;
+          if (this.qrActionVal) {
+            if (d.action_triggered) {
+              const outcome = d.action_result ? (d.action_result.success ? 'ACCEPTED' : (d.action_result.message || 'DISPATCHED')) : 'TRIGGERED';
+              this.qrActionVal.textContent = `${d.action_triggered} (${outcome})`;
+            } else {
+              this.qrActionVal.textContent = '--';
+            }
+          }
+
+          // Real-time notification and log when an action (e.g. RTL) is triggered
+          if (d.action_triggered && this._lastNotifiedQrTime !== d.iso_time) {
+            this._lastNotifiedQrTime = d.iso_time;
+            const ok = d.action_result && d.action_result.success;
+            const outcomeStr = ok ? 'ACCEPTED' : (d.action_result?.message || 'DISPATCHED');
+            this.log(`🎯 QR Decoded: "${d.payload}" ➔ Action: ${d.action_triggered} [${outcomeStr}]`, ok ? 'success' : 'warn');
+            this.updateCommandFeedback(`QR Action: ${d.action_triggered} triggered by "${d.payload}" (${outcomeStr})`, ok ? 'accepted' : 'pending');
+          }
+        }
+      }
+
+      if (historyRes.ok) {
+        const hJson = await historyRes.json();
+        if (this.qrHistoryTableBody) {
+          if (!hJson.data || hJson.data.length === 0) {
+            this.qrHistoryTableBody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: var(--text-muted);">No detections yet. Start scanner or upload an image.</td></tr>';
+          } else {
+            this.qrHistoryTableBody.innerHTML = hJson.data.map(item => {
+              const actionBadge = item.action_triggered
+                ? ` <span class="card-badge" style="background:var(--accent-amber);color:#000;font-weight:600;padding:2px 6px;">${this.escapeHtml(item.action_triggered)}</span>`
+                : '';
+              return `
+              <tr>
+                <td class="mono">${item.iso_time ? item.iso_time.substring(11, 19) : '--'}</td>
+                <td class="mono highlight" style="word-break: break-all;">${this.escapeHtml(item.payload)}</td>
+                <td class="mono">[${item.center[0]}, ${item.center[1]}]</td>
+                <td>${Math.round(item.confidence * 100)}%</td>
+                <td><span class="card-badge">${item.source || 'camera'}</span>${actionBadge}</td>
+              </tr>
+            `;
+            }).join('');
+          }
+        }
+      }
+    } catch (err) {
+      console.error('Error fetching QR data:', err);
+    }
+  }
+
+  async toggleQRWorker() {
+    try {
+      const statusRes = await fetch('/api/vision/qr/status');
+      const sJson = await statusRes.json();
+      const isRunning = sJson.data.running;
+      const endpoint = isRunning ? '/api/vision/qr/stop' : '/api/vision/qr/start';
+      await fetch(endpoint, { method: 'POST' });
+      this.log(`QR Scanner worker ${isRunning ? 'stopped' : 'started'}.`, 'info');
+      this.fetchQRStatus();
+    } catch (err) {
+      this.log(`Failed to toggle QR worker: ${err.message}`, 'error');
+    }
+  }
+
+  async clearQRHistory() {
+    try {
+      await fetch('/api/vision/qr/clear', { method: 'POST' });
+      this.log('QR detection history cleared.', 'info');
+      this.fetchQRStatus();
+    } catch (err) {
+      this.log(`Failed to clear QR history: ${err.message}`, 'error');
+    }
+  }
+
+  async handleQRUpload(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    this.log(`Uploading ${file.name} to QR scanner engine...`, 'info');
+    const formData = new FormData();
+    formData.append('file', file);
+
+    try {
+      const res = await fetch('/api/vision/qr/process-image', {
+        method: 'POST',
+        body: formData
+      });
+      const json = await res.json();
+      if (res.ok && json.status === 'success') {
+        this.log(`QR Engine scanned image: found ${json.count} targets`, 'success');
+        this.fetchQRStatus();
+      } else {
+        throw new Error(json.message || 'Scan failed');
+      }
+    } catch (err) {
+      this.log(`QR Upload error: ${err.message}`, 'error');
+    }
+  }
+
+  async associateQRWithMission() {
+    const payload = this.qrPayloadVal.textContent;
+    if (!payload || payload === '--') {
+      this.qrMissionMatchFeedback.textContent = 'No QR target selected to match.';
+      return;
+    }
+
+    this.log(`Attempting to associate QR payload '${payload}' with stored missions...`, 'info');
+    try {
+      const res = await fetch('/api/missions/associate-qr', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ payload })
+      });
+      const json = await res.json();
+      if (res.ok && json.status === 'success') {
+        this.qrMissionMatchFeedback.textContent = `Matched mission: ${json.data.mission_id}!`;
+        this.qrMissionMatchFeedback.style.color = 'var(--accent-green)';
+        this.log(`QR Code matched to mission '${json.data.mission_id}'! State transitioned to READY.`, 'success');
+        this.fetchMissions();
+      } else {
+        this.qrMissionMatchFeedback.textContent = json.message || 'No matching mission found.';
+        this.qrMissionMatchFeedback.style.color = 'var(--accent-red)';
+      }
+    } catch (err) {
+      this.qrMissionMatchFeedback.textContent = err.message;
+      this.qrMissionMatchFeedback.style.color = 'var(--accent-red)';
+    }
+  }
+
+  // -------------------------------------------------------------
+  // Mission Management (Milestone 04)
+  // -------------------------------------------------------------
+  async fetchMissions() {
+    try {
+      const [listRes, activeRes] = await Promise.all([
+        fetch('/api/missions'),
+        fetch('/api/missions/active')
+      ]);
+
+      if (activeRes.ok) {
+        const aJson = await activeRes.json();
+        this.activeMission = aJson.data;
+        this.updateActiveMissionUI(aJson.data);
+      }
+
+      if (listRes.ok) {
+        const lJson = await listRes.json();
+        this.updateStoredMissionsTable(lJson.data || []);
+      }
+    } catch (err) {
+      console.error('Error fetching missions:', err);
+    }
+  }
+
+  updateActiveMissionUI(mission) {
+    if (!mission) {
+      if (this.activeMissionTitle) this.activeMissionTitle.textContent = 'No Active Mission';
+      if (this.activeMissionDesc) this.activeMissionDesc.textContent = 'Select or create a mission to begin autonomous flight.';
+      if (this.activeMissionStateBadge) this.activeMissionStateBadge.textContent = 'IDLE';
+      if (this.missionWaypointsTableBody) {
+        this.missionWaypointsTableBody.innerHTML = '<tr><td colspan="7" style="text-align: center; color: var(--text-muted);">No waypoints loaded.</td></tr>';
+      }
+      return;
+    }
+
+    if (this.activeMissionTitle) this.activeMissionTitle.textContent = `${mission.name} (${mission.id})`;
+    if (this.activeMissionDesc) this.activeMissionDesc.textContent = mission.description || 'Configured autonomous waypoint trajectory.';
+    if (this.activeMissionStateBadge) {
+      this.activeMissionStateBadge.textContent = mission.state;
+      this.activeMissionStateBadge.className = `card-badge ${mission.state.toLowerCase()}`;
+    }
+
+    if (this.missionWaypointsTableBody) {
+      this.missionWaypointsTableBody.innerHTML = mission.waypoints.map(wp => `
+        <tr>
+          <td>#${wp.seq}</td>
+          <td><span class="card-badge">${wp.action}</span></td>
+          <td class="mono">${wp.lat.toFixed(6)}</td>
+          <td class="mono">${wp.lon.toFixed(6)}</td>
+          <td class="mono">${wp.alt_m} m</td>
+          <td>${wp.speed_m_s} m/s</td>
+          <td>${wp.hold_time_s} s</td>
+        </tr>
+      `).join('');
+    }
+  }
+
+  updateStoredMissionsTable(missions) {
+    if (!this.storedMissionsTableBody) return;
+    if (missions.length === 0) {
+      this.storedMissionsTableBody.innerHTML = '<tr><td colspan="4" style="text-align: center; color: var(--text-muted);">No stored missions found.</td></tr>';
+      return;
+    }
+
+    this.storedMissionsTableBody.innerHTML = missions.map(m => `
+      <tr>
+        <td class="mono highlight">${this.escapeHtml(m.id)}</td>
+        <td>${this.escapeHtml(m.name)}</td>
+        <td><span class="card-badge ${m.state.toLowerCase()}">${m.state}</span></td>
+        <td>
+          <button class="btn btn-primary btn-xs" onclick="droneDashboard.activateMission('${m.id}')">Select</button>
+          <button class="btn btn-ghost btn-xs" onclick="droneDashboard.deleteMission('${m.id}')">Delete</button>
+        </td>
+      </tr>
+    `).join('');
+  }
+
+  async activateMission(missionId) {
+    try {
+      const res = await fetch('/api/missions/active', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mission_id: missionId })
+      });
+      if (res.ok) {
+        this.log(`Mission '${missionId}' activated.`, 'info');
+        this.fetchMissions();
+      }
+    } catch (err) {
+      this.log(`Error activating mission: ${err.message}`, 'error');
+    }
+  }
+
+  async deleteMission(missionId) {
+    if (!confirm(`Delete mission '${missionId}'?`)) return;
+    try {
+      const res = await fetch(`/api/missions/${missionId}`, { method: 'DELETE' });
+      if (res.ok) {
+        this.log(`Mission '${missionId}' deleted.`, 'info');
+        this.fetchMissions();
+      }
+    } catch (err) {
+      this.log(`Error deleting mission: ${err.message}`, 'error');
+    }
+  }
+
+  async transitionActiveMission(targetState) {
+    if (!this.activeMission) {
+      this.log('No active mission loaded to transition.', 'error');
+      return;
+    }
+    try {
+      const res = await fetch(`/api/missions/${this.activeMission.id}/state`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ state: targetState, reason: 'Ground Station operator request' })
+      });
+      const json = await res.json();
+      if (res.ok) {
+        this.log(`Mission transitioned to state ${targetState}`, 'success');
+        this.fetchMissions();
+      } else {
+        throw new Error(json.message);
+      }
+    } catch (err) {
+      this.log(`State transition rejected: ${err.message}`, 'error');
+    }
+  }
+
+  async createNewMission() {
+    const id = this.newMissionId.value.trim();
+    const name = this.newMissionName.value.trim();
+    const rawWaypoints = this.newMissionWaypoints.value.trim();
+
+    if (!id || !name || !rawWaypoints) {
+      alert('Please fill out Mission ID, Name, and Waypoints JSON');
+      return;
+    }
+
+    try {
+      const waypoints = JSON.parse(rawWaypoints);
+      const res = await fetch('/api/missions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id, name, waypoints })
+      });
+      const json = await res.json();
+      if (res.ok) {
+        this.log(`Created mission '${id}' successfully.`, 'success');
+        this.newMissionId.value = '';
+        this.newMissionName.value = '';
+        this.fetchMissions();
+      } else {
+        throw new Error(json.message);
+      }
+    } catch (err) {
+      this.log(`Failed to create mission: ${err.message}`, 'error');
+    }
+  }
+
+  // -------------------------------------------------------------
+  // Geofence & Navigation Radar (Milestone 05)
+  // -------------------------------------------------------------
+  async fetchGeofence() {
+    try {
+      const res = await fetch('/api/geofence');
+      if (!res.ok) return;
+      const json = await res.json();
+      if (json.status === 'success' && json.data) {
+        this.geofenceConfig = json.data;
+        if (this.fenceTypeSelect) this.fenceTypeSelect.value = json.data.fence_type;
+        if (this.fenceCenterLat) this.fenceCenterLat.value = json.data.circle_center_lat;
+        if (this.fenceCenterLon) this.fenceCenterLon.value = json.data.circle_center_lon;
+        if (this.fenceRadius) this.fenceRadius.value = json.data.circle_radius_m;
+        if (this.fenceMinAlt) this.fenceMinAlt.value = json.data.min_alt_m;
+        if (this.fenceMaxAlt) this.fenceMaxAlt.value = json.data.max_alt_m;
+        this.renderGeofenceCanvas();
+      }
+    } catch (err) {
+      console.error('Error fetching geofence:', err);
+    }
+  }
+
+  async saveGeofenceConfig() {
+    const fType = this.fenceTypeSelect.value;
+    const cLat = parseFloat(this.fenceCenterLat.value);
+    const cLon = parseFloat(this.fenceCenterLon.value);
+    const r = parseFloat(this.fenceRadius.value);
+    const minAlt = parseFloat(this.fenceMinAlt.value);
+    const maxAlt = parseFloat(this.fenceMaxAlt.value);
+
+    try {
+      const res = await fetch('/api/geofence', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          fence_type: fType,
+          circle_center_lat: cLat,
+          circle_center_lon: cLon,
+          circle_radius_m: r,
+          min_alt_m: minAlt,
+          max_alt_m: maxAlt
+        })
+      });
+      const json = await res.json();
+      if (res.ok) {
+        this.log('Geofence parameters updated and saved.', 'success');
+        this.fetchGeofence();
+      }
+    } catch (err) {
+      this.log(`Failed updating geofence: ${err.message}`, 'error');
+    }
+  }
+
+  // -------------------------------------------------------------
+  // Map Visualizer: Mode Control & Data Fetching
+  // -------------------------------------------------------------
+  setMapMode(mode) {
+    if (this.mapMode === mode) return;
+    this.mapMode = mode;
+
+    if (this.btnMapNormal) this.btnMapNormal.classList.toggle('active', mode === 'normal');
+    if (this.btnMapHeatmap) this.btnMapHeatmap.classList.toggle('active', mode === 'heatmap');
+
+    if (this.mapLegendNormal) this.mapLegendNormal.style.display = (mode === 'normal') ? 'flex' : 'none';
+    if (this.mapLegendHeatmap) this.mapLegendHeatmap.style.display = (mode === 'heatmap') ? 'flex' : 'none';
+
+    if (mode === 'heatmap') {
+      this.fetchCoverage();
+    }
+    this.renderGeofenceCanvas();
+  }
+
+  isValidGeoCoord(lat, lon) {
+    return typeof lat === 'number' && typeof lon === 'number' &&
+      Number.isFinite(lat) && Number.isFinite(lon) &&
+      !Number.isNaN(lat) && !Number.isNaN(lon) &&
+      lat >= -90.0 && lat <= 90.0 &&
+      lon >= -180.0 && lon <= 180.0 &&
+      !(lat === 0.0 && lon === 0.0);
+  }
+
+  recordBreadcrumb(lat, lon, alt) {
+    if (!this.isValidGeoCoord(lat, lon)) return;
+    const last = this.flightPathHistory[this.flightPathHistory.length - 1];
+    if (last) {
+      const dLat = (lat - last.lat) * 110540;
+      const dLon = (lon - last.lon) * 111320 * Math.cos(lat * Math.PI / 180);
+      if (Math.hypot(dLat, dLon) < 0.4) return;
+    }
+    const safeAlt = (typeof alt === 'number' && Number.isFinite(alt)) ? alt : 0.0;
+    this.flightPathHistory.push({ lat, lon, alt: safeAlt, t: Date.now() });
+    if (this.flightPathHistory.length > this.maxBreadcrumbs) {
+      this.flightPathHistory.shift();
+    }
+  }
+
+  async fetchCoverage() {
+    try {
+      const res = await fetch('/api/geofence/coverage');
+      if (!res.ok) return;
+      const json = await res.json();
+      const data = json.data || json;
+      if (data.status === 'success' || data.total_area_m2 !== undefined) {
+        this.coverageData = data;
+        this.lastCoverageFetch = Date.now();
+        if (this.activeTab === 'geofence' && this.mapMode === 'heatmap') {
+          this.renderGeofenceCanvas();
+        }
+      }
+    } catch (err) {
+      console.warn('Coverage API offline or unreachable:', err);
+    }
+  }
+
+  getThermalColor(intensity, alpha = 0.5) {
+    const val = Math.max(0, Math.min(1, intensity));
+    let r, g, b;
+    if (val < 0.25) {
+      const t = val / 0.25;
+      r = 0;
+      g = Math.round(100 + 129 * t);
+      b = 255;
+    } else if (val < 0.5) {
+      const t = (val - 0.25) / 0.25;
+      r = 0;
+      g = Math.round(229 + 1 * t);
+      b = Math.round(255 * (1 - t) + 118 * t);
+    } else if (val < 0.75) {
+      const t = (val - 0.5) / 0.25;
+      r = Math.round(255 * t);
+      g = Math.round(230 - 59 * t);
+      b = Math.round(118 * (1 - t));
+    } else {
+      const t = (val - 0.75) / 0.25;
+      r = 255;
+      g = Math.round(171 * (1 - t) + 23 * t);
+      b = Math.round(68 * t);
+    }
+    return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+  }
+
+  drawRoundedRect(ctx, x, y, width, height, radius) {
+    ctx.beginPath();
+    ctx.moveTo(x + radius, y);
+    ctx.lineTo(x + width - radius, y);
+    ctx.quadraticCurveTo(x + width, y, x + width, y + radius);
+    ctx.lineTo(x + width, y + height - radius);
+    ctx.quadraticCurveTo(x + width, y + height, x + width - radius, y + height);
+    ctx.lineTo(x + radius, y + height);
+    ctx.quadraticCurveTo(x, y + height, x, y + height - radius);
+    ctx.lineTo(x, y + radius);
+    ctx.quadraticCurveTo(x, y, x + radius, y);
+    ctx.closePath();
+  }
+
+  // -------------------------------------------------------------
+  // Overhauled 2D Canvas Visualizer (Normal & Heatmap)
+  // -------------------------------------------------------------
+  renderGeofenceCanvas() {
+    if (!this.geofenceCanvas) return;
+    const canvas = this.geofenceCanvas;
+    const ctx = canvas.getContext('2d');
+
+    // Handle high DPI container sizing
+    const width = canvas.parentElement.clientWidth || 400;
+    const height = canvas.parentElement.clientHeight || 350;
+    if (canvas.width !== width || canvas.height !== height) {
+      canvas.width = width;
+      canvas.height = height;
+    }
+
+    ctx.clearRect(0, 0, width, height);
+    const cx = width / 2;
+    const cy = height / 2;
+
+    // Draw Radar rings
+    ctx.strokeStyle = 'rgba(0, 229, 255, 0.12)';
+    ctx.lineWidth = 1;
+    for (let r = 40; r < Math.min(width, height) / 2; r += 40) {
+      ctx.beginPath();
+      ctx.arc(cx, cy, r, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+
+    // Radar crosshairs
+    ctx.beginPath();
+    ctx.moveTo(cx, 10);
+    ctx.lineTo(cx, height - 10);
+    ctx.moveTo(10, cy);
+    ctx.lineTo(width - 10, cy);
+    ctx.stroke();
+
+    // Default configuration fallbacks if backend geofence not loaded yet
+    const config = this.geofenceConfig || {
+      fence_type: 'circular',
+      circle_center_lat: 37.4093,
+      circle_center_lon: -122.0641,
+      circle_radius_m: 250
+    };
+
+    const centerLat = config.circle_center_lat || 37.4093;
+    const centerLon = config.circle_center_lon || -122.0641;
+    let fenceRadiusM = config.circle_radius_m || 250;
+
+    // In polygon mode, calculate bounding radius to scale canvas properly
+    if (config.fence_type !== 'circular' && config.polygon_vertices && config.polygon_vertices.length > 2) {
+      let maxDist = 50;
+      config.polygon_vertices.forEach(p => {
+        const dx = (p.lon - centerLon) * 111320 * Math.cos(centerLat * Math.PI / 180);
+        const dy = -(p.lat - centerLat) * 110540;
+        const d = Math.hypot(dx, dy);
+        if (d > maxDist) maxDist = d;
+      });
+      fenceRadiusM = maxDist * 1.15;
+    }
+
+    const maxR = Math.min(width, height) * 0.38;
+    const scale = maxR / Math.max(50, fenceRadiusM);
+
+    const toCanvasCoords = (lat, lon) => {
+      if (typeof lat !== 'number' || typeof lon !== 'number' ||
+          !Number.isFinite(lat) || !Number.isFinite(lon) ||
+          Number.isNaN(lat) || Number.isNaN(lon)) {
+        return null;
+      }
+      const dx = (lon - centerLon) * 111320 * Math.cos(centerLat * Math.PI / 180) * scale;
+      const dy = -(lat - centerLat) * 110540 * scale;
+      if (!Number.isFinite(dx) || !Number.isFinite(dy)) {
+        return null;
+      }
+      return { px: cx + dx, py: cy + dy };
+    };
+
+    // ==========================================
+    // RENDER MODE: HEATMAP
+    // ==========================================
+    if (this.mapMode === 'heatmap') {
+      // 1. Draw Muted Geofence Boundary
+      ctx.strokeStyle = 'rgba(255, 235, 59, 0.4)';
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([4, 4]);
+      if (config.fence_type === 'circular') {
+        ctx.beginPath();
+        ctx.arc(cx, cy, (config.circle_radius_m || 250) * scale, 0, Math.PI * 2);
+        ctx.stroke();
+      } else if (config.polygon_vertices && config.polygon_vertices.length > 2) {
+        ctx.beginPath();
+        let firstDrawn = false;
+        config.polygon_vertices.forEach((p) => {
+          const pt = toCanvasCoords(p.lat, p.lon);
+          if (!pt) return;
+          if (!firstDrawn) {
+            ctx.moveTo(pt.px, pt.py);
+            firstDrawn = true;
+          } else {
+            ctx.lineTo(pt.px, pt.py);
+          }
+        });
+        if (firstDrawn) {
+          ctx.closePath();
+          ctx.stroke();
+        }
+      }
+      ctx.setLineDash([]);
+
+      // 2. Render Discretized Coverage Grid Cells with Thermal Gradient
+      const cov = this.coverageData;
+      if (cov && Array.isArray(cov.scanned_points) && cov.scanned_points.length > 0) {
+        cov.scanned_points.forEach(p => {
+          const pt = toCanvasCoords(p.lat, p.lon);
+          if (!pt) return;
+          const intensity = (typeof p.intensity === 'number' && Number.isFinite(p.intensity)) ? p.intensity : 0.6;
+          const cellRadius = Math.max(3, ((typeof p.radius_m === 'number' && Number.isFinite(p.radius_m)) ? p.radius_m : 2.4) * scale);
+          if (!Number.isFinite(cellRadius)) return;
+
+          const grad = ctx.createRadialGradient(pt.px, pt.py, 0, pt.px, pt.py, cellRadius);
+          grad.addColorStop(0, this.getThermalColor(intensity, 0.7));
+          grad.addColorStop(0.7, this.getThermalColor(intensity, 0.4));
+          grad.addColorStop(1, this.getThermalColor(intensity, 0.0));
+
+          ctx.fillStyle = grad;
+          ctx.beginPath();
+          ctx.arc(pt.px, pt.py, cellRadius, 0, Math.PI * 2);
+          ctx.fill();
+        });
+      }
+
+      // 3. Render Vision Observation Intensity Hotspots (Target / QR detections)
+      if (cov && Array.isArray(cov.observations)) {
+        cov.observations.forEach(obs => {
+          const pt = toCanvasCoords(obs.lat, obs.lon);
+          if (!pt) return;
+          ctx.fillStyle = 'rgba(255, 23, 68, 0.3)';
+          ctx.beginPath();
+          ctx.arc(pt.px, pt.py, 12, 0, Math.PI * 2);
+          ctx.fill();
+
+          ctx.fillStyle = '#ff1744';
+          ctx.beginPath();
+          ctx.arc(pt.px, pt.py, 5, 0, Math.PI * 2);
+          ctx.fill();
+
+          ctx.fillStyle = '#ffffff';
+          ctx.font = 'bold 9px JetBrains Mono, monospace';
+          ctx.fillText(obs.label || 'TARGET', pt.px + 8, pt.py - 4);
+        });
+      }
+
+      // 4. Real-time Drone Marker in Heatmap Mode
+      const telem = this.currentTelemetry;
+      const hasValidTelemCoord = telem && this.isValidGeoCoord(telem.latitude, telem.longitude);
+      if (telem && telem.connected && telem.gps_fix_type >= 2 && hasValidTelemCoord) {
+        const dronePt = toCanvasCoords(telem.latitude, telem.longitude);
+        if (dronePt) {
+          ctx.fillStyle = 'rgba(0, 229, 255, 0.3)';
+          ctx.beginPath();
+          ctx.arc(dronePt.px, dronePt.py, 9, 0, Math.PI * 2);
+          ctx.fill();
+
+          ctx.fillStyle = '#00e5ff';
+          ctx.beginPath();
+          ctx.arc(dronePt.px, dronePt.py, 5, 0, Math.PI * 2);
+          ctx.fill();
+
+          const heading = (typeof telem.heading_deg === 'number' && Number.isFinite(telem.heading_deg)) ? telem.heading_deg : 0;
+          const headingRad = (heading - 90) * Math.PI / 180;
+          ctx.strokeStyle = '#00e5ff';
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.moveTo(dronePt.px, dronePt.py);
+          ctx.lineTo(dronePt.px + Math.cos(headingRad) * 20, dronePt.py + Math.sin(headingRad) * 20);
+          ctx.stroke();
+        }
+      }
+
+      // 5. Coverage Stats HUD Overlay
+      if (cov && cov.total_area_m2 !== undefined) {
+        ctx.save();
+        const pct = (cov.coverage_pct !== undefined ? cov.coverage_pct : 0.0).toFixed(1);
+        const scannedM2 = Math.round(cov.scanned_area_m2 || 0).toLocaleString();
+        const totalM2 = Math.round(cov.total_area_m2 || 0).toLocaleString();
+        const scannedCells = cov.scanned_cells_count || 0;
+        const totalCells = cov.total_cells_count || 0;
+
+        const boxW = Math.min(width - 24, 340);
+        const boxH = 58;
+        const bx = 12;
+        const by = 12;
+
+        ctx.fillStyle = 'rgba(6, 9, 16, 0.88)';
+        ctx.strokeStyle = 'rgba(0, 229, 255, 0.4)';
+        ctx.lineWidth = 1;
+        this.drawRoundedRect(ctx, bx, by, boxW, boxH, 4);
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.font = 'bold 12px JetBrains Mono, monospace';
+        ctx.fillStyle = '#00e5ff';
+        ctx.fillText(`HEATMAP COVERAGE: ${pct}%`, bx + 12, by + 20);
+
+        ctx.font = '10px Inter, sans-serif';
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
+        ctx.fillText(`Scanned: ${scannedM2} m² / ${totalM2} m²`, bx + 12, by + 36);
+
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.55)';
+        ctx.fillText(`Discretized Grid: ${scannedCells} / ${totalCells} cells`, bx + 12, by + 50);
+        ctx.restore();
+      } else {
+        // Awaiting telemetry
+        ctx.save();
+        const bannerW = Math.min(width - 40, 460);
+        const bannerH = 56;
+        const bx = (width - bannerW) / 2;
+        const by = 25;
+
+        ctx.fillStyle = 'rgba(28, 20, 6, 0.88)';
+        ctx.strokeStyle = 'rgba(255, 171, 0, 0.7)';
+        ctx.lineWidth = 1.5;
+        this.drawRoundedRect(ctx, bx, by, bannerW, bannerH, 6);
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.fillStyle = '#ffab00';
+        ctx.fillRect(bx, by, 5, bannerH);
+        ctx.font = 'bold 11px JetBrains Mono, monospace';
+        ctx.fillText('SEARCH GRID INITIALIZED // AWAITING COVERAGE TELEMETRY', bx + 16, by + 24);
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
+        ctx.font = '10px Inter, sans-serif';
+        ctx.fillText('Coverage algorithm standing by for Pixhawk GPS coordinate updates', bx + 16, by + 42);
+        ctx.restore();
+      }
+      return;
+    }
+
+    // ==========================================
+    // RENDER MODE: NORMAL MAP
+    // ==========================================
+
+    // 1. Draw Geofence Boundary (Yellow dashed line + subtle envelope tint)
+    ctx.strokeStyle = '#ffeb3b';
+    ctx.lineWidth = 2;
+    ctx.setLineDash([6, 4]);
+
+    if (config.fence_type === 'circular') {
+      const fenceR = (config.circle_radius_m || 250) * scale;
+      ctx.fillStyle = 'rgba(255, 235, 59, 0.03)';
+      ctx.beginPath();
+      ctx.arc(cx, cy, fenceR, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+    } else if (config.polygon_vertices && config.polygon_vertices.length > 2) {
+      ctx.fillStyle = 'rgba(255, 235, 59, 0.03)';
+      ctx.beginPath();
+      let firstDrawn = false;
+      config.polygon_vertices.forEach((p) => {
+        const pt = toCanvasCoords(p.lat, p.lon);
+        if (!pt) return;
+        if (!firstDrawn) {
+          ctx.moveTo(pt.px, pt.py);
+          firstDrawn = true;
+        } else {
+          ctx.lineTo(pt.px, pt.py);
+        }
+      });
+      if (firstDrawn) {
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+      }
+    }
+    ctx.setLineDash([]);
+
+    // 2. Draw Search Boundary (Orange dashed line)
+    if (this.coverageData && Array.isArray(this.coverageData.boundary_geo) && this.coverageData.boundary_geo.length > 2) {
+      ctx.strokeStyle = 'rgba(255, 152, 0, 0.7)';
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([4, 4]);
+      ctx.beginPath();
+      let firstDrawn = false;
+      this.coverageData.boundary_geo.forEach((p) => {
+        const pt = toCanvasCoords(p.lat, p.lon);
+        if (!pt) return;
+        if (!firstDrawn) {
+          ctx.moveTo(pt.px, pt.py);
+          firstDrawn = true;
+        } else {
+          ctx.lineTo(pt.px, pt.py);
+        }
+      });
+      if (firstDrawn) {
+        ctx.closePath();
+        ctx.stroke();
+      }
+      ctx.setLineDash([]);
+    }
+
+    // 3. Draw Mission Waypoints (Magenta)
+    if (this.activeMission && Array.isArray(this.activeMission.waypoints)) {
+      ctx.strokeStyle = 'rgba(233, 30, 99, 0.6)';
+      ctx.fillStyle = '#e91e63';
+      ctx.lineWidth = 2;
+
+      ctx.beginPath();
+      let firstDrawn = false;
+      this.activeMission.waypoints.forEach((wp) => {
+        const pt = toCanvasCoords(wp.lat, wp.lon);
+        if (!pt) return;
+        if (!firstDrawn) {
+          ctx.moveTo(pt.px, pt.py);
+          firstDrawn = true;
+        } else {
+          ctx.lineTo(pt.px, pt.py);
+        }
+      });
+      if (firstDrawn) {
+        ctx.stroke();
+      }
+
+      this.activeMission.waypoints.forEach(wp => {
+        const pt = toCanvasCoords(wp.lat, wp.lon);
+        if (!pt) return;
+        ctx.beginPath();
+        ctx.arc(pt.px, pt.py, 4, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#ffffff';
+        ctx.font = '10px JetBrains Mono, monospace';
+        ctx.fillText(`#${wp.seq}`, pt.px + 6, pt.py - 4);
+        ctx.fillStyle = '#e91e63';
+      });
+    }
+
+    // 4. Draw Historical Flight Path Breadcrumbs (Ring buffer)
+    if (this.flightPathHistory && this.flightPathHistory.length > 1) {
+      const hist = this.flightPathHistory;
+      const total = hist.length;
+
+      // Connecting polyline
+      ctx.strokeStyle = 'rgba(0, 229, 255, 0.35)';
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([3, 3]);
+      ctx.beginPath();
+      let firstDrawn = false;
+      for (let i = 0; i < total; i++) {
+        const pt = toCanvasCoords(hist[i].lat, hist[i].lon);
+        if (!pt) continue;
+        if (!firstDrawn) {
+          ctx.moveTo(pt.px, pt.py);
+          firstDrawn = true;
+        } else {
+          ctx.lineTo(pt.px, pt.py);
+        }
+      }
+      if (firstDrawn) {
+        ctx.stroke();
+      }
+      ctx.setLineDash([]);
+
+      // Breadcrumb dots with fading alpha
+      const step = total > 100 ? 3 : (total > 50 ? 2 : 1);
+      for (let i = 0; i < total; i += step) {
+        const pt = toCanvasCoords(hist[i].lat, hist[i].lon);
+        if (!pt) continue;
+        const alpha = 0.15 + 0.55 * (i / total);
+        ctx.fillStyle = `rgba(0, 229, 255, ${alpha.toFixed(2)})`;
+        ctx.beginPath();
+        ctx.arc(pt.px, pt.py, 2.5, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
+    // 5. Draw Real-time GPS Drone Marker & Heading Vector
+    const telem = this.currentTelemetry;
+    const isConnected = !!(telem && telem.connected);
+    const hasGpsFix = isConnected && (telem.gps_fix_type >= 2) && this.isValidGeoCoord(telem.latitude, telem.longitude);
+
+    if (hasGpsFix) {
+      const dronePt = toCanvasCoords(telem.latitude, telem.longitude);
+      if (dronePt) {
+        // Outer glow pulse
+        ctx.fillStyle = 'rgba(0, 229, 255, 0.25)';
+        ctx.beginPath();
+        ctx.arc(dronePt.px, dronePt.py, 9, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Solid cyan core
+        ctx.fillStyle = '#00e5ff';
+        ctx.beginPath();
+        ctx.arc(dronePt.px, dronePt.py, 5, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Heading vector line
+        const heading = (typeof telem.heading_deg === 'number' && Number.isFinite(telem.heading_deg)) ? telem.heading_deg : 0;
+        const headingRad = (heading - 90) * Math.PI / 180;
+        ctx.strokeStyle = '#00e5ff';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(dronePt.px, dronePt.py);
+        ctx.lineTo(dronePt.px + Math.cos(headingRad) * 24, dronePt.py + Math.sin(headingRad) * 24);
+        ctx.stroke();
+      }
+
+      // 6. Subtle 3D Fix Telemetry HUD Tag
+      ctx.save();
+      const pad = 12;
+      const tagH = 26;
+      const sats = (typeof telem.satellites_visible === 'number') ? telem.satellites_visible : 0;
+      const fix = telem.gps_fix_name || '3D Fix';
+      const latStr = (typeof telem.latitude === 'number' && Number.isFinite(telem.latitude)) ? telem.latitude.toFixed(5) : '--';
+      const lonStr = (typeof telem.longitude === 'number' && Number.isFinite(telem.longitude)) ? telem.longitude.toFixed(5) : '--';
+      const altStr = (typeof telem.altitude_relative_m === 'number' && Number.isFinite(telem.altitude_relative_m)) ? telem.altitude_relative_m.toFixed(1) : '0.0';
+      const hudText = `GPS ${fix} (${sats} Sats) • ${latStr}, ${lonStr} • Alt: ${altStr}m`;
+
+      ctx.font = '10px JetBrains Mono, monospace';
+      const tagW = ctx.measureText(hudText).width + 26;
+
+      ctx.fillStyle = 'rgba(6, 9, 16, 0.85)';
+      ctx.strokeStyle = 'rgba(0, 229, 255, 0.35)';
+      ctx.lineWidth = 1;
+      this.drawRoundedRect(ctx, pad, pad, tagW, tagH, 4);
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.fillStyle = '#00e676';
+      ctx.beginPath();
+      ctx.arc(pad + 10, pad + tagH / 2, 3.5, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.fillStyle = '#00e5ff';
+      ctx.fillText(hudText, pad + 18, pad + 17);
+      ctx.restore();
+
+    } else if (!isConnected) {
+      // 7. Disconnected State Warning Banner
+      ctx.save();
+      const bannerW = Math.min(width - 40, 480);
+      const bannerH = 70;
+      const bx = (width - bannerW) / 2;
+      const by = 25;
+
+      ctx.fillStyle = 'rgba(22, 6, 8, 0.88)';
+      ctx.strokeStyle = 'rgba(255, 23, 68, 0.7)';
+      ctx.lineWidth = 1.5;
+      this.drawRoundedRect(ctx, bx, by, bannerW, bannerH, 6);
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.fillStyle = '#ff1744';
+      ctx.fillRect(bx, by, 5, bannerH);
+
+      ctx.fillStyle = '#ff5252';
+      ctx.font = 'bold 12px JetBrains Mono, monospace';
+      ctx.fillText('⚠️ MAVLINK DISCONNECTED // WAITING FOR TELEMETRY', bx + 18, by + 28);
+
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.65)';
+      ctx.font = '10px Inter, sans-serif';
+      ctx.fillText('Pixhawk TELEM2 /dev/serial0 offline • Check physical UART & power', bx + 18, by + 48);
+      ctx.restore();
+
+    } else {
+      // 8. Waiting for GPS Lock Warning Banner
+      ctx.save();
+      const bannerW = Math.min(width - 40, 480);
+      const bannerH = 70;
+      const bx = (width - bannerW) / 2;
+      const by = 25;
+
+      ctx.fillStyle = 'rgba(28, 20, 6, 0.88)';
+      ctx.strokeStyle = 'rgba(255, 171, 0, 0.7)';
+      ctx.lineWidth = 1.5;
+      this.drawRoundedRect(ctx, bx, by, bannerW, bannerH, 6);
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.fillStyle = '#ffab00';
+      ctx.fillRect(bx, by, 5, bannerH);
+
+      ctx.fillStyle = '#ffab00';
+      ctx.font = 'bold 12px JetBrains Mono, monospace';
+      ctx.fillText('🛰️ WAITING FOR GPS FIX // NO SATELLITE LOCK', bx + 18, by + 28);
+
+      const fixName = telem.gps_fix_name || 'No Fix';
+      const sats = telem.satellites_visible || 0;
+      const hdop = telem.hdop !== undefined ? telem.hdop : '--';
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
+      ctx.font = '10px Inter, sans-serif';
+      ctx.fillText(`Fix: ${fixName} • Satellites: ${sats} • HDOP: ${hdop} • Awaiting 3D lock`, bx + 18, by + 48);
+      ctx.restore();
+    }
+  }
+
+  // -------------------------------------------------------------
+  // Utility & Logging Console
+  // -------------------------------------------------------------
+  log(message, type = 'info') {
+    if (!this.consoleLogs) return;
+    const entry = document.createElement('div');
+    entry.className = `log-entry ${type}`;
+    const now = new Date();
+    const timeStr = `[${now.toTimeString().substring(0, 8)}]`;
+    entry.innerHTML = `<span class="log-time">${timeStr}</span> <span class="log-text">${this.escapeHtml(message)}</span>`;
+    this.consoleLogs.appendChild(entry);
+    this.consoleLogs.scrollTop = this.consoleLogs.scrollHeight;
+  }
+
+  escapeHtml(str) {
+    if (typeof str !== 'string') return '';
+    return str
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+  }
+}
+
+// Global initialization
+document.addEventListener('DOMContentLoaded', () => {
+  window.droneDashboard = new DroneDashboard();
+});

@@ -157,14 +157,9 @@ class VisionService:
                     data_dict["duplicate"] = True
 
         with self._lock:
-            if accepted_results:
-                self._latest_detections = accepted_results
-            elif detections:
-                self._latest_detections = [d.to_dict() for d in detections]
-            else:
-                self._latest_detections = []
+            self._latest_detections = [d.to_dict() for d in detections]
 
-        return accepted_results if accepted_results else self._latest_detections
+        return accepted_results if accepted_results else [d.to_dict() for d in detections]
 
     def process_image_bytes(self, image_bytes: bytes, filename: str = "upload.jpg") -> List[Dict[str, Any]]:
         """
