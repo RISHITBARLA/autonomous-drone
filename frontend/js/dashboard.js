@@ -24,6 +24,10 @@ class DroneDashboard {
     this.flightPathHistory = []; // Ring buffer up to 300 points
     this.maxBreadcrumbs = 300;
     this.lastCoverageFetch = 0;
+    this.task2HeatmapData = null;
+    this.lastHeatmapFetch = 0;
+    this.spiralGeneratedWaypoints = [];
+    this.renderedClusterMarkers = [];
 
     this.initElements();
     this.bindEvents();
@@ -241,6 +245,37 @@ class DroneDashboard {
     this.consoleLogs = document.getElementById('consoleLogs');
     this.btnClearLogs = document.getElementById('btnClearLogs');
     this.btnRefreshHealth = document.getElementById('btnRefreshHealth');
+
+    // Task 2 Spiral & Boundary Elements
+    this.spiralCenterLat = document.getElementById('spiralCenterLat');
+    this.spiralCenterLon = document.getElementById('spiralCenterLon');
+    this.spiralRadiusSlider = document.getElementById('spiralRadiusSlider');
+    this.spiralRadiusValue = document.getElementById('spiralRadiusValue');
+    this.spiralPatternType = document.getElementById('spiralPatternType');
+    this.spiralAltitude = document.getElementById('spiralAltitude');
+    this.spiralOverlap = document.getElementById('spiralOverlap');
+    this.spiralSpeed = document.getElementById('spiralSpeed');
+    this.btnSetBoundaryFromDrone = document.getElementById('btnSetBoundaryFromDrone');
+    this.btnSaveBoundaryPreset = document.getElementById('btnSaveBoundaryPreset');
+    this.btnLoadBoundaryPreset = document.getElementById('btnLoadBoundaryPreset');
+    this.btnGenerateSpiralMission = document.getElementById('btnGenerateSpiralMission');
+    this.spiralGenerationStatus = document.getElementById('spiralGenerationStatus');
+
+    // Evidence Modal Elements
+    this.detectionEvidenceModal = document.getElementById('detectionEvidenceModal');
+    this.btnCloseEvidenceModal = document.getElementById('btnCloseEvidenceModal');
+    this.btnDismissEvidenceModal = document.getElementById('btnDismissEvidenceModal');
+    this.evidenceModalImage = document.getElementById('evidenceModalImage');
+    this.evidenceModalNoImage = document.getElementById('evidenceModalNoImage');
+    this.evidenceModalCategory = document.getElementById('evidenceModalCategory');
+    this.evidenceModalConfidence = document.getElementById('evidenceModalConfidence');
+    this.evidenceModalCoords = document.getElementById('evidenceModalCoords');
+    this.evidenceModalUncertainty = document.getElementById('evidenceModalUncertainty');
+    this.evidenceModalProjectionStatus = document.getElementById('evidenceModalProjectionStatus');
+    this.evidenceModalObsCount = document.getElementById('evidenceModalObsCount');
+    this.evidenceModalQRRow = document.getElementById('evidenceModalQRRow');
+    this.evidenceModalQRPayload = document.getElementById('evidenceModalQRPayload');
+    this.evidenceModalTimestamp = document.getElementById('evidenceModalTimestamp');
   }
 
   bindEvents() {
@@ -404,6 +439,53 @@ class DroneDashboard {
     if (this.btnMapHeatmap) {
       this.btnMapHeatmap.addEventListener('click', () => this.setMapMode('heatmap'));
     }
+
+    // Task 2: Spiral Boundary & Mission Planner Events
+    if (this.spiralRadiusSlider) {
+      this.spiralRadiusSlider.addEventListener('input', (e) => {
+        if (this.spiralRadiusValue) this.spiralRadiusValue.textContent = `${e.target.value} m`;
+        this.renderGeofenceCanvas();
+      });
+    }
+
+    if (this.btnSetBoundaryFromDrone) {
+      this.btnSetBoundaryFromDrone.addEventListener('click', () => {
+        const telem = this.currentTelemetry;
+        if (telem && this.isValidGeoCoord(telem.latitude, telem.longitude)) {
+          if (this.spiralCenterLat) this.spiralCenterLat.value = telem.latitude.toFixed(6);
+          if (this.spiralCenterLon) this.spiralCenterLon.value = telem.longitude.toFixed(6);
+          this.log(`Boundary center aligned to drone GPS: ${telem.latitude.toFixed(6)}, ${telem.longitude.toFixed(6)}`, 'info');
+          this.renderGeofenceCanvas();
+        } else {
+          this.log('Cannot set center: Telemetry GPS fix unavailable or invalid', 'warn');
+        }
+      });
+    }
+
+    if (this.btnSaveBoundaryPreset) {
+      this.btnSaveBoundaryPreset.addEventListener('click', () => this.saveBoundaryPreset());
+    }
+
+    if (this.btnLoadBoundaryPreset) {
+      this.btnLoadBoundaryPreset.addEventListener('click', () => this.loadBoundaryPreset());
+    }
+
+    if (this.btnGenerateSpiralMission) {
+      this.btnGenerateSpiralMission.addEventListener('click', () => this.generateSpiralMission());
+    }
+
+    // Evidence Inspection Modal Events
+    if (this.btnCloseEvidenceModal) {
+      this.btnCloseEvidenceModal.addEventListener('click', () => this.closeEvidenceModal());
+    }
+    if (this.btnDismissEvidenceModal) {
+      this.btnDismissEvidenceModal.addEventListener('click', () => this.closeEvidenceModal());
+    }
+
+    // Canvas click hit-testing
+    if (this.geofenceCanvas) {
+      this.geofenceCanvas.addEventListener('click', (e) => this.handleCanvasClick(e));
+    }
   }
 
   switchTab(tabName) {
@@ -440,6 +522,7 @@ class DroneDashboard {
     if (tabName === 'geofence') {
       if (this.mapMode === 'heatmap') {
         this.fetchCoverage();
+        this.fetchVisionHeatmap();
       }
       this.renderGeofenceCanvas();
     }
@@ -463,6 +546,9 @@ class DroneDashboard {
         if (this.mapMode === 'heatmap') {
           if (now - this.lastCoverageFetch > 3000) {
             this.fetchCoverage();
+          }
+          if (now - (this.lastHeatmapFetch || 0) > 1000) {
+            this.fetchVisionHeatmap();
           }
         }
         this.renderGeofenceCanvas();
@@ -1622,6 +1708,7 @@ class DroneDashboard {
 
     if (mode === 'heatmap') {
       this.fetchCoverage();
+      this.fetchVisionHeatmap();
     }
     this.renderGeofenceCanvas();
   }
@@ -1665,6 +1752,219 @@ class DroneDashboard {
       }
     } catch (err) {
       console.warn('Coverage API offline or unreachable:', err);
+    }
+  }
+
+  async fetchVisionHeatmap() {
+    try {
+      const res = await fetch('/api/vision/heatmap');
+      if (!res.ok) return;
+      const data = await res.json();
+      if (data.status === 'success') {
+        this.task2HeatmapData = data;
+        this.lastHeatmapFetch = Date.now();
+        if (this.activeTab === 'geofence' && this.mapMode === 'heatmap') {
+          this.renderGeofenceCanvas();
+        }
+      }
+    } catch (err) {
+      console.debug('Vision heatmap poll skipped:', err);
+    }
+  }
+
+  async generateSpiralMission() {
+    if (!this.spiralCenterLat || !this.spiralCenterLon) return;
+    const lat = parseFloat(this.spiralCenterLat.value);
+    const lon = parseFloat(this.spiralCenterLon.value);
+    const rad = parseFloat(this.spiralRadiusSlider ? this.spiralRadiusSlider.value : 60);
+    const alt = parseFloat(this.spiralAltitude ? this.spiralAltitude.value : 20.0);
+    const overlap = parseFloat(this.spiralOverlap ? this.spiralOverlap.value : 25);
+    const speed = parseFloat(this.spiralSpeed ? this.spiralSpeed.value : 3.5);
+    const pattern = this.spiralPatternType ? this.spiralPatternType.value : 'spiral';
+
+    if (!this.isValidGeoCoord(lat, lon)) {
+      if (this.spiralGenerationStatus) {
+        this.spiralGenerationStatus.textContent = '❌ Invalid center coordinates.';
+        this.spiralGenerationStatus.style.color = 'var(--accent-red)';
+      }
+      return;
+    }
+
+    if (this.spiralGenerationStatus) {
+      this.spiralGenerationStatus.textContent = 'Generating spiral scanning path...';
+      this.spiralGenerationStatus.style.color = 'var(--accent-cyan)';
+    }
+
+    try {
+      const res = await fetch('/api/missions/generate-spiral', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          center_lat: lat,
+          center_lon: lon,
+          radius_m: rad,
+          altitude_m: alt,
+          overlap_pct: overlap,
+          speed_ms: speed,
+          pattern_type: pattern,
+          mission_id: `spiral-${Date.now().toString().slice(-4)}`
+        })
+      });
+
+      const json = await res.json();
+      if (res.ok && json.status === 'success') {
+        this.spiralGeneratedWaypoints = json.waypoints || [];
+        if (this.newMissionWaypoints) {
+          this.newMissionWaypoints.value = JSON.stringify(this.spiralGeneratedWaypoints, null, 2);
+        }
+        if (this.newMissionId && !this.newMissionId.value) {
+          this.newMissionId.value = `spiral-${Date.now().toString().slice(-4)}`;
+        }
+        if (this.newMissionName && !this.newMissionName.value) {
+          this.newMissionName.value = `Spiral Scan R${Math.round(rad)}m (${pattern})`;
+        }
+        if (this.spiralGenerationStatus) {
+          this.spiralGenerationStatus.textContent = `✅ Generated ${this.spiralGeneratedWaypoints.length} waypoints (Swath: ${json.camera_swath_width_m}m). Contained inside geofence.`;
+          this.spiralGenerationStatus.style.color = '#22c55e';
+        }
+        this.log(`Spiral route generated: ${this.spiralGeneratedWaypoints.length} waypoints inside ${rad}m radius`, 'info');
+        this.renderGeofenceCanvas();
+      } else {
+        const msg = json.message || 'Route generation failed';
+        if (this.spiralGenerationStatus) {
+          this.spiralGenerationStatus.textContent = `❌ ${msg}`;
+          this.spiralGenerationStatus.style.color = 'var(--accent-red)';
+        }
+        this.log(`Spiral generation rejected: ${msg}`, 'warn');
+      }
+    } catch (err) {
+      if (this.spiralGenerationStatus) {
+        this.spiralGenerationStatus.textContent = `❌ Network error: ${err.message}`;
+        this.spiralGenerationStatus.style.color = 'var(--accent-red)';
+      }
+    }
+  }
+
+  saveBoundaryPreset() {
+    try {
+      const preset = {
+        center_lat: parseFloat(this.spiralCenterLat.value),
+        center_lon: parseFloat(this.spiralCenterLon.value),
+        radius_m: parseFloat(this.spiralRadiusSlider.value),
+        altitude_m: parseFloat(this.spiralAltitude.value),
+        overlap_pct: parseFloat(this.spiralOverlap.value),
+        pattern_type: this.spiralPatternType.value
+      };
+      localStorage.setItem('drone_spiral_boundary_preset', JSON.stringify(preset));
+      this.log('Scanning boundary preset saved to local storage.', 'info');
+      if (this.spiralGenerationStatus) {
+        this.spiralGenerationStatus.textContent = '💾 Boundary preset saved.';
+        this.spiralGenerationStatus.style.color = '#22c55e';
+      }
+    } catch (e) {
+      console.warn('Failed saving boundary preset:', e);
+    }
+  }
+
+  loadBoundaryPreset() {
+    try {
+      const raw = localStorage.getItem('drone_spiral_boundary_preset');
+      if (!raw) {
+        this.log('No saved boundary preset found.', 'warn');
+        return;
+      }
+      const preset = JSON.parse(raw);
+      if (preset.center_lat && this.spiralCenterLat) this.spiralCenterLat.value = preset.center_lat;
+      if (preset.center_lon && this.spiralCenterLon) this.spiralCenterLon.value = preset.center_lon;
+      if (preset.radius_m && this.spiralRadiusSlider) {
+        this.spiralRadiusSlider.value = preset.radius_m;
+        if (this.spiralRadiusValue) this.spiralRadiusValue.textContent = `${preset.radius_m} m`;
+      }
+      if (preset.altitude_m && this.spiralAltitude) this.spiralAltitude.value = preset.altitude_m;
+      if (preset.overlap_pct && this.spiralOverlap) this.spiralOverlap.value = preset.overlap_pct;
+      if (preset.pattern_type && this.spiralPatternType) this.spiralPatternType.value = preset.pattern_type;
+      this.log('Scanning boundary preset loaded.', 'info');
+      this.renderGeofenceCanvas();
+    } catch (e) {
+      console.warn('Failed loading boundary preset:', e);
+    }
+  }
+
+  openEvidenceModal(cluster) {
+    if (!cluster || !this.detectionEvidenceModal) return;
+    if (this.evidenceModalCategory) {
+      this.evidenceModalCategory.textContent = cluster.category ? cluster.category.toUpperCase().replace('_', ' ') : 'TARGET';
+      this.evidenceModalCategory.style.color = cluster.display_color || '#00e5ff';
+    }
+    if (this.evidenceModalConfidence) {
+      this.evidenceModalConfidence.textContent = `${Math.round((cluster.confidence || 0) * 100)}%`;
+    }
+    if (this.evidenceModalCoords) {
+      const lat = (typeof cluster.estimated_lat === 'number') ? cluster.estimated_lat.toFixed(6) : 'N/A';
+      const lon = (typeof cluster.estimated_lon === 'number') ? cluster.estimated_lon.toFixed(6) : 'N/A';
+      this.evidenceModalCoords.textContent = `${lat}, ${lon}`;
+    }
+    if (this.evidenceModalUncertainty) {
+      this.evidenceModalUncertainty.textContent = `±${(cluster.uncertainty_m || 5.0).toFixed(1)} m`;
+    }
+    if (this.evidenceModalProjectionStatus) {
+      if (cluster.is_approximate) {
+        this.evidenceModalProjectionStatus.textContent = 'APPROXIMATE (DEGRADED)';
+        this.evidenceModalProjectionStatus.style.background = 'rgba(250, 204, 21, 0.2)';
+        this.evidenceModalProjectionStatus.style.color = '#facc15';
+      } else {
+        this.evidenceModalProjectionStatus.textContent = '3D PINHOLE CALIBRATED';
+        this.evidenceModalProjectionStatus.style.background = 'rgba(34, 197, 94, 0.2)';
+        this.evidenceModalProjectionStatus.style.color = '#22c55e';
+      }
+    }
+    if (this.evidenceModalObsCount) {
+      this.evidenceModalObsCount.textContent = `${cluster.observation_count || 1} observations`;
+    }
+    if (this.evidenceModalQRRow && this.evidenceModalQRPayload) {
+      if (cluster.qr_payload) {
+        this.evidenceModalQRRow.style.display = 'flex';
+        this.evidenceModalQRPayload.textContent = cluster.qr_payload;
+      } else {
+        this.evidenceModalQRRow.style.display = 'none';
+      }
+    }
+    if (this.evidenceModalTimestamp) {
+      const t = cluster.last_seen_ts ? new Date(cluster.last_seen_ts * 1000).toLocaleTimeString() : new Date().toLocaleTimeString();
+      this.evidenceModalTimestamp.textContent = `Last seen: ${t}`;
+    }
+    if (this.evidenceModalImage && this.evidenceModalNoImage) {
+      if (cluster.evidence_image_path) {
+        this.evidenceModalImage.src = cluster.evidence_image_path;
+        this.evidenceModalImage.style.display = 'block';
+        this.evidenceModalNoImage.style.display = 'none';
+      } else {
+        this.evidenceModalImage.style.display = 'none';
+        this.evidenceModalNoImage.style.display = 'block';
+      }
+    }
+    this.detectionEvidenceModal.classList.remove('hidden');
+  }
+
+  closeEvidenceModal() {
+    if (this.detectionEvidenceModal) {
+      this.detectionEvidenceModal.classList.add('hidden');
+    }
+  }
+
+  handleCanvasClick(e) {
+    if (!this.geofenceCanvas || !this.renderedClusterMarkers || this.renderedClusterMarkers.length === 0) return;
+    const canvas = this.geofenceCanvas;
+    const rect = canvas.getBoundingClientRect();
+    const clickX = (e.clientX - rect.left) * (canvas.width / rect.width);
+    const clickY = (e.clientY - rect.top) * (canvas.height / rect.height);
+
+    for (const marker of this.renderedClusterMarkers) {
+      const d = Math.hypot(marker.px - clickX, marker.py - clickY);
+      if (d <= Math.max(16, marker.radius)) {
+        this.openEvidenceModal(marker.cluster);
+        return;
+      }
     }
   }
 
@@ -1726,6 +2026,7 @@ class DroneDashboard {
     }
 
     ctx.clearRect(0, 0, width, height);
+    this.renderedClusterMarkers = [];
     const cx = width / 2;
     const cy = height / 2;
 
@@ -1819,6 +2120,44 @@ class DroneDashboard {
       }
       ctx.setLineDash([]);
 
+      // 1.5 Draw Circular Scanning Boundary & Spiral Scanning Route if defined
+      if (this.spiralCenterLat && this.spiralCenterLon) {
+        const sLat = parseFloat(this.spiralCenterLat.value);
+        const sLon = parseFloat(this.spiralCenterLon.value);
+        const sRad = parseFloat(this.spiralRadiusSlider ? this.spiralRadiusSlider.value : 60);
+        if (this.isValidGeoCoord(sLat, sLon) && Number.isFinite(sRad)) {
+          const sPt = toCanvasCoords(sLat, sLon);
+          if (sPt) {
+            ctx.save();
+            ctx.strokeStyle = 'rgba(251, 146, 60, 0.7)';
+            ctx.lineWidth = 1.5;
+            ctx.setLineDash([5, 4]);
+            ctx.beginPath();
+            ctx.arc(sPt.px, sPt.py, sRad * scale, 0, Math.PI * 2);
+            ctx.stroke();
+            ctx.restore();
+          }
+        }
+      }
+
+      if (this.spiralGeneratedWaypoints && this.spiralGeneratedWaypoints.length > 1) {
+        ctx.save();
+        ctx.strokeStyle = 'rgba(236, 72, 153, 0.65)';
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([3, 3]);
+        ctx.beginPath();
+        let firstSp = false;
+        this.spiralGeneratedWaypoints.forEach(wp => {
+          const pt = toCanvasCoords(wp.lat, wp.lon);
+          if (!pt) return;
+          if (!firstSp) { ctx.moveTo(pt.px, pt.py); firstSp = true; }
+          else { ctx.lineTo(pt.px, pt.py); }
+        });
+        if (firstSp) ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.restore();
+      }
+
       // 2. Render Discretized Coverage Grid Cells with Thermal Gradient
       const cov = this.coverageData;
       if (cov && Array.isArray(cov.scanned_points) && cov.scanned_points.length > 0) {
@@ -1841,8 +2180,43 @@ class DroneDashboard {
         });
       }
 
-      // 3. Render Vision Observation Intensity Hotspots (Target / QR detections)
-      if (cov && Array.isArray(cov.observations)) {
+      // 3. Render Task 2 Priority Visual Clusters & Target Hotspots
+      if (this.task2HeatmapData && Array.isArray(this.task2HeatmapData.clusters) && this.task2HeatmapData.clusters.length > 0) {
+        this.task2HeatmapData.clusters.forEach(c => {
+          const pt = toCanvasCoords(c.estimated_lat, c.estimated_lon);
+          if (!pt) return;
+          const color = c.display_color || '#38bdf8';
+          const isConfirmed = c.qr_validated || c.is_confirmed;
+          const markerRadius = isConfirmed ? 16 : 13;
+
+          // Outer pulsing ring
+          ctx.strokeStyle = color;
+          ctx.lineWidth = isConfirmed ? 2.5 : 1.5;
+          ctx.beginPath();
+          ctx.arc(pt.px, pt.py, markerRadius, 0, Math.PI * 2);
+          ctx.stroke();
+
+          // Translucent halo
+          ctx.fillStyle = isConfirmed ? 'rgba(34, 197, 94, 0.25)' : 'rgba(255, 255, 255, 0.12)';
+          ctx.beginPath();
+          ctx.arc(pt.px, pt.py, markerRadius, 0, Math.PI * 2);
+          ctx.fill();
+
+          // Center solid dot
+          ctx.fillStyle = color;
+          ctx.beginPath();
+          ctx.arc(pt.px, pt.py, 5, 0, Math.PI * 2);
+          ctx.fill();
+
+          // Category & Confidence label
+          ctx.fillStyle = '#ffffff';
+          ctx.font = 'bold 9px JetBrains Mono, monospace';
+          const label = (c.qr_validated ? '🎯 QR' : c.category.substring(0, 7).toUpperCase()) + ` ${Math.round((c.confidence || 0) * 100)}%`;
+          ctx.fillText(label, pt.px + 18, pt.py + 3);
+
+          this.renderedClusterMarkers.push({ px: pt.px, py: pt.py, radius: markerRadius, cluster: c });
+        });
+      } else if (cov && Array.isArray(cov.observations)) {
         cov.observations.forEach(obs => {
           const pt = toCanvasCoords(obs.lat, obs.lon);
           if (!pt) return;
@@ -2042,6 +2416,93 @@ class DroneDashboard {
         ctx.font = '10px JetBrains Mono, monospace';
         ctx.fillText(`#${wp.seq}`, pt.px + 6, pt.py - 4);
         ctx.fillStyle = '#e91e63';
+      });
+    }
+
+    // 3.5 Draw Circular Scanning Boundary & Generated Spiral Route Preview
+    if (this.spiralCenterLat && this.spiralCenterLon) {
+      const sLat = parseFloat(this.spiralCenterLat.value);
+      const sLon = parseFloat(this.spiralCenterLon.value);
+      const sRad = parseFloat(this.spiralRadiusSlider ? this.spiralRadiusSlider.value : 60);
+      if (this.isValidGeoCoord(sLat, sLon) && Number.isFinite(sRad)) {
+        const sPt = toCanvasCoords(sLat, sLon);
+        if (sPt) {
+          ctx.save();
+          ctx.strokeStyle = 'rgba(251, 146, 60, 0.75)';
+          ctx.lineWidth = 1.5;
+          ctx.setLineDash([5, 4]);
+          ctx.beginPath();
+          ctx.arc(sPt.px, sPt.py, sRad * scale, 0, Math.PI * 2);
+          ctx.stroke();
+          ctx.restore();
+        }
+      }
+    }
+
+    if (this.spiralGeneratedWaypoints && this.spiralGeneratedWaypoints.length > 0) {
+      ctx.save();
+      ctx.strokeStyle = 'rgba(236, 72, 153, 0.8)';
+      ctx.fillStyle = '#ec4899';
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([3, 3]);
+
+      ctx.beginPath();
+      let spDrawn = false;
+      this.spiralGeneratedWaypoints.forEach((wp) => {
+        const pt = toCanvasCoords(wp.lat, wp.lon);
+        if (!pt) return;
+        if (!spDrawn) {
+          ctx.moveTo(pt.px, pt.py);
+          spDrawn = true;
+        } else {
+          ctx.lineTo(pt.px, pt.py);
+        }
+      });
+      if (spDrawn) ctx.stroke();
+      ctx.setLineDash([]);
+
+      this.spiralGeneratedWaypoints.forEach((wp, idx) => {
+        const pt = toCanvasCoords(wp.lat, wp.lon);
+        if (!pt) return;
+        ctx.beginPath();
+        ctx.arc(pt.px, pt.py, 3.5, 0, Math.PI * 2);
+        ctx.fill();
+        if (idx === 0 || idx === this.spiralGeneratedWaypoints.length - 1 || idx % 4 === 0) {
+          ctx.fillStyle = '#ffffff';
+          ctx.font = '9px JetBrains Mono, monospace';
+          ctx.fillText(`S${wp.seq}`, pt.px + 5, pt.py - 3);
+          ctx.fillStyle = '#ec4899';
+        }
+      });
+      ctx.restore();
+    }
+
+    // 3.6 Draw Task 2 Visual Target Clusters (Inspectable in Normal Mode)
+    if (this.task2HeatmapData && Array.isArray(this.task2HeatmapData.clusters) && this.task2HeatmapData.clusters.length > 0) {
+      this.task2HeatmapData.clusters.forEach(c => {
+        const pt = toCanvasCoords(c.estimated_lat, c.estimated_lon);
+        if (!pt) return;
+        const color = c.display_color || '#38bdf8';
+        const isConfirmed = c.qr_validated || c.is_confirmed;
+        const markerRadius = isConfirmed ? 15 : 12;
+
+        ctx.strokeStyle = color;
+        ctx.lineWidth = isConfirmed ? 2.5 : 1.5;
+        ctx.beginPath();
+        ctx.arc(pt.px, pt.py, markerRadius, 0, Math.PI * 2);
+        ctx.stroke();
+
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        ctx.arc(pt.px, pt.py, 4.5, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = '#ffffff';
+        ctx.font = 'bold 9px JetBrains Mono, monospace';
+        const label = (c.qr_validated ? '🎯 QR' : c.category.substring(0, 7).toUpperCase());
+        ctx.fillText(label, pt.px + 16, pt.py + 3);
+
+        this.renderedClusterMarkers.push({ px: pt.px, py: pt.py, radius: markerRadius, cluster: c });
       });
     }
 

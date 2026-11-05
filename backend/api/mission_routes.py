@@ -190,3 +190,89 @@ def associate_qr():
             "data": res
         }), 400
 
+
+@mission_bp.route("/generate-spiral", methods=["POST"])
+def generate_spiral_mission():
+    """
+    POST /api/missions/generate-spiral
+    Generates an interior-covering Archimedean spiral or concentric tangential waypoint
+    sequence for a circular scanning boundary and validates containment against geofence.
+    """
+    from backend.mission.spiral_coverage_planner import (
+        SpiralCoverageConfig,
+        SpiralCoveragePlanner,
+    )
+
+    body = request.get_json() or {}
+    try:
+        center_lat = float(body["center_lat"])
+        center_lon = float(body["center_lon"])
+        radius_m = float(body["radius_m"])
+    except (KeyError, TypeError, ValueError):
+        return jsonify({
+            "status": "error",
+            "message": "Missing or invalid required parameters: center_lat, center_lon, radius_m"
+        }), 400
+
+    alt_m = float(body.get("alt_m", 15.0))
+    speed_m_s = float(body.get("speed_m_s", 4.0))
+    overlap_pct = float(body.get("overlap_pct", 25.0))
+    pattern_type = str(body.get("pattern_type", "spiral")).lower()
+    auto_save = bool(body.get("auto_save", False))
+    explicit_spacing = float(body["spacing_m"]) if "spacing_m" in body and body["spacing_m"] is not None else None
+
+    try:
+        cfg = SpiralCoverageConfig(
+            center_lat=center_lat,
+            center_lon=center_lon,
+            radius_m=radius_m,
+            alt_m=alt_m,
+            speed_m_s=speed_m_s,
+            overlap_pct=overlap_pct,
+            pattern_type=pattern_type,
+            explicit_spacing_m=explicit_spacing,
+        )
+        planner = SpiralCoveragePlanner(cfg)
+        waypoints, metadata = planner.generate_waypoints()
+        is_valid, violations = planner.validate_against_geofence(waypoints)
+        metadata["contained_in_geofence"] = is_valid
+        metadata["violations"] = violations
+
+        if not is_valid and not body.get("allow_uncontained", False):
+            return jsonify({
+                "status": "error",
+                "message": f"Generated scanning route violates geofence ({len(violations)} points out of bounds)",
+                "data": {
+                    "waypoints": [w.__dict__ for w in waypoints],
+                    "metadata": metadata,
+                    "violations": violations,
+                }
+            }), 400
+
+        saved_mission = None
+        if auto_save and is_valid:
+            mission_name = body.get("name", f"Spiral-Scan-{int(radius_m)}m")
+            mission_data = {
+                "name": mission_name,
+                "description": f"Autonomous {pattern_type} area scan: center=({center_lat:.5f}, {center_lon:.5f}), R={radius_m}m",
+                "waypoints": [w.__dict__ for w in waypoints],
+            }
+            saved_mission = mission_service.create_mission(mission_data).to_dict()
+
+        return jsonify({
+            "status": "success",
+            "message": f"Generated {len(waypoints)} scanning waypoints ({pattern_type} pattern)",
+            "data": {
+                "waypoints": [w.__dict__ for w in waypoints],
+                "metadata": metadata,
+                "saved_mission": saved_mission,
+            }
+        }), 200
+
+    except ValueError as ve:
+        return jsonify({"status": "error", "message": str(ve)}), 400
+    except Exception as e:
+        logger.error("Failed generating spiral mission: %s", e)
+        return jsonify({"status": "error", "message": f"Internal error: {str(e)}"}), 500
+
+

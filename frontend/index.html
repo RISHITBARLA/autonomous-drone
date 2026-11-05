@@ -829,6 +829,65 @@
                 <button class="btn btn-primary btn-sm" id="btnSaveNewMission" style="width: 100%;">Create Mission</button>
               </div>
             </div>
+
+            <!-- Autonomous Circular / Spiral Scanning Mission Planner -->
+            <div class="card">
+              <div class="card-header">
+                <span class="card-title">🌀 Autonomous Spiral / Circular Scan Planner</span>
+                <span class="card-badge highlight" id="spiralPlannerBadge">AUTONOMOUS M4</span>
+              </div>
+              <div class="card-body">
+                <div class="form-grid" style="margin-bottom: 10px;">
+                  <div class="form-group">
+                    <label class="form-label">Center Lat</label>
+                    <input type="number" step="0.0001" class="form-input" id="spiralCenterLat" value="37.4093" />
+                  </div>
+                  <div class="form-group">
+                    <label class="form-label">Center Lon</label>
+                    <input type="number" step="0.0001" class="form-input" id="spiralCenterLon" value="-122.0641" />
+                  </div>
+                </div>
+                <div class="form-group" style="margin-bottom: 10px;">
+                  <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
+                    <label class="form-label" style="margin-bottom: 0;">Scanning Radius (m)</label>
+                    <span id="spiralRadiusValue" style="font-size: 0.8rem; color: var(--accent-cyan); font-weight: bold;">60 m</span>
+                  </div>
+                  <input type="range" min="15" max="250" step="5" value="60" class="form-range" id="spiralRadiusSlider" style="width: 100%; cursor: pointer;" />
+                </div>
+                <div class="form-grid" style="margin-bottom: 10px;">
+                  <div class="form-group">
+                    <label class="form-label">Pattern Type</label>
+                    <select class="form-select" id="spiralPatternType">
+                      <option value="spiral">Archimedean Spiral</option>
+                      <option value="tangential">Concentric Tangential</option>
+                    </select>
+                  </div>
+                  <div class="form-group">
+                    <label class="form-label">Scan Altitude (m)</label>
+                    <input type="number" step="1.0" class="form-input" id="spiralAltitude" value="20.0" min="5.0" max="100.0" />
+                  </div>
+                </div>
+                <div class="form-grid" style="margin-bottom: 10px;">
+                  <div class="form-group">
+                    <label class="form-label">Swath Overlap (%)</label>
+                    <input type="number" step="5" class="form-input" id="spiralOverlap" value="25" min="5" max="80" />
+                  </div>
+                  <div class="form-group">
+                    <label class="form-label">Flight Speed (m/s)</label>
+                    <input type="number" step="0.5" class="form-input" id="spiralSpeed" value="3.5" min="1.0" max="15.0" />
+                  </div>
+                </div>
+                <div style="display: flex; gap: 8px; margin-bottom: 10px;">
+                  <button class="btn btn-secondary btn-sm" id="btnSetBoundaryFromDrone" style="flex: 1;" title="Use Drone Current GPS">Use Drone GPS</button>
+                  <button class="btn btn-ghost btn-sm" id="btnSaveBoundaryPreset" style="flex: 1;">Save Boundary</button>
+                  <button class="btn btn-ghost btn-sm" id="btnLoadBoundaryPreset" style="flex: 1;">Load Boundary</button>
+                </div>
+                <button class="btn btn-primary btn-sm" id="btnGenerateSpiralMission" style="width: 100%;">
+                  🚀 Generate &amp; Preview Spiral Scan Route
+                </button>
+                <div id="spiralGenerationStatus" style="font-size: 0.78rem; margin-top: 8px; text-align: center; color: var(--text-muted);"></div>
+              </div>
+            </div>
           </section>
         </div>
 
@@ -864,12 +923,14 @@
                   <span>┈ Cyan Trail: Flight Path</span>
                 </div>
                 <!-- Dynamic Legend for Heatmap -->
-                <div id="mapLegendHeatmap" style="display: none; justify-content: space-between; margin-top: 10px; font-size: 0.75rem; color: var(--text-muted); flex-wrap: wrap; gap: 6px;">
-                  <span>🟦 Cyan: Low Coverage</span>
-                  <span>🟩 Green: Medium</span>
-                  <span>🟨 Amber: High</span>
-                  <span>🟥 Red: QR / Target Hotspot</span>
-                  <span>○ Yellow: Boundary Limit</span>
+                <div id="mapLegendHeatmap" style="display: none; justify-content: space-between; margin-top: 10px; font-size: 0.72rem; color: var(--text-muted); flex-wrap: wrap; gap: 8px;">
+                  <span><span style="color: #00e5ff;">■</span> Coverage Swath</span>
+                  <span><span style="color: #fb923c;">●</span> Square/Rect</span>
+                  <span><span style="color: #facc15;">●</span> B/W Pattern</span>
+                  <span><span style="color: #38bdf8;">●</span> QR Pending</span>
+                  <span><span style="color: #22c55e;">●</span> QR Validated</span>
+                  <span><span style="color: #a855f7;">●</span> Other Object</span>
+                  <span><span style="color: #94a3b8;">●</span> Uncertain</span>
                 </div>
               </div>
             </div>
@@ -977,6 +1038,56 @@
       <div class="modal-footer" style="display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; border-top: 1px solid var(--border-color); padding-top: 14px;">
         <button class="btn btn-ghost btn-sm" id="btnCancelDisarmModal">Cancel</button>
         <button class="btn btn-secondary btn-sm" id="btnExecuteDisarmModal" disabled>CONFIRM DISARM</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Detection & Target Evidence Modal -->
+  <div class="modal-backdrop hidden" id="detectionEvidenceModal">
+    <div class="modal-box" style="max-width: 520px;">
+      <div class="modal-header">
+        <span class="modal-title" id="evidenceModalTitle">🎯 TARGET EVIDENCE INSPECTOR</span>
+        <button class="modal-close" id="btnCloseEvidenceModal">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div style="text-align: center; margin-bottom: 12px; background: #000; border-radius: var(--radius-sm); overflow: hidden; min-height: 120px; max-height: 240px; display: flex; align-items: center; justify-content: center; border: 1px solid var(--border-color);">
+          <img id="evidenceModalImage" src="" alt="Target Evidence Crop" style="max-width: 100%; max-height: 240px; object-fit: contain; display: none;" />
+          <div id="evidenceModalNoImage" style="color: var(--text-muted); font-size: 0.8rem; padding: 20px;">No high-resolution evidence crop recorded</div>
+        </div>
+        <div style="background: rgba(0,0,0,0.35); border: 1px solid var(--border-color); padding: 12px; border-radius: var(--radius-sm); font-size: 0.82rem;">
+          <div style="display: flex; justify-content: space-between; margin-bottom: 6px;">
+            <span>Category:</span>
+            <strong id="evidenceModalCategory" style="color: var(--accent-cyan);">-</strong>
+          </div>
+          <div style="display: flex; justify-content: space-between; margin-bottom: 6px;">
+            <span>Confidence:</span>
+            <strong id="evidenceModalConfidence">-</strong>
+          </div>
+          <div style="display: flex; justify-content: space-between; margin-bottom: 6px;">
+            <span>Estimated GPS:</span>
+            <strong id="evidenceModalCoords" class="highlight">-</strong>
+          </div>
+          <div style="display: flex; justify-content: space-between; margin-bottom: 6px;">
+            <span>Uncertainty Radius:</span>
+            <span id="evidenceModalUncertainty">-</span>
+          </div>
+          <div style="display: flex; justify-content: space-between; margin-bottom: 6px;">
+            <span>Geoprojection Status:</span>
+            <span id="evidenceModalProjectionStatus" class="card-badge">-</span>
+          </div>
+          <div style="display: flex; justify-content: space-between; margin-bottom: 6px;">
+            <span>Observations Count:</span>
+            <span id="evidenceModalObsCount">1</span>
+          </div>
+          <div id="evidenceModalQRRow" style="display: none; justify-content: space-between; margin-top: 6px; padding-top: 6px; border-top: 1px dashed var(--border-color);">
+            <span>QR Payload:</span>
+            <code id="evidenceModalQRPayload" style="color: #22c55e; font-weight: bold;">-</code>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer" style="display: flex; justify-content: space-between; align-items: center; margin-top: 14px; border-top: 1px solid var(--border-color); padding-top: 12px;">
+        <span id="evidenceModalTimestamp" style="font-size: 0.72rem; color: var(--text-muted);">-</span>
+        <button class="btn btn-secondary btn-sm" id="btnDismissEvidenceModal">Close</button>
       </div>
     </div>
   </div>

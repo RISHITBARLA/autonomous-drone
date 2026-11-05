@@ -10,6 +10,8 @@ logs/*.log
 captures/*.jpg
 captures/*.png
 captures/*.jpeg
+captures/evidence/*
+captures/test_task2_targets/*
 .pytest_cache/
 .coverage
 htmlcov/

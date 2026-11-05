@@ -122,6 +122,45 @@ class TestAPIEndpoints(unittest.TestCase):
         data = response.get_json()
         self.assertEqual(data["status"], "error")
 
+    def test_generate_spiral_mission_api_success(self):
+        """Verify POST /api/missions/generate-spiral returns waypoints inside geofence."""
+        payload = {
+            "center_lat": 37.4093,
+            "center_lon": -122.0641,
+            "radius_m": 60.0,
+            "alt_m": 15.0,
+            "speed_m_s": 4.0,
+            "pattern_type": "spiral"
+        }
+        response = self.client.post("/api/missions/generate-spiral", json=payload)
+        self.assertEqual(response.status_code, 200)
+        data = response.get_json()
+        self.assertEqual(data["status"], "success")
+        self.assertIn("waypoints", data["data"])
+        self.assertGreater(len(data["data"]["waypoints"]), 5)
+        self.assertTrue(data["data"]["metadata"]["contained_in_geofence"])
+
+    def test_generate_spiral_mission_api_geofence_violation(self):
+        """Verify POST /api/missions/generate-spiral rejects routes exceeding geofence."""
+        payload = {
+            "center_lat": 37.4093,
+            "center_lon": -122.0641,
+            "radius_m": 500.0,  # Exceeds default 250m circular geofence
+            "alt_m": 15.0
+        }
+        response = self.client.post("/api/missions/generate-spiral", json=payload)
+        self.assertEqual(response.status_code, 400)
+        data = response.get_json()
+        self.assertEqual(data["status"], "error")
+        self.assertIn("violates geofence", data["message"])
+
+    def test_generate_spiral_mission_api_missing_params(self):
+        """Verify POST /api/missions/generate-spiral rejects missing required fields."""
+        response = self.client.post("/api/missions/generate-spiral", json={"radius_m": 50.0})
+        self.assertEqual(response.status_code, 400)
+        data = response.get_json()
+        self.assertEqual(data["status"], "error")
+
     # -------------------------------------------------------------
     # Milestone M2: Frontend Cache-Busting Verification Tests
     # -------------------------------------------------------------
@@ -246,6 +285,69 @@ class TestAPIEndpoints(unittest.TestCase):
         self.assertEqual(data["scanned_area_m2"], 0.0)
         self.assertEqual(data["coverage_pct"], 0.0)
         self.assertEqual(len(data["scanned_points"]), 0)
+
+    # -------------------------------------------------------------
+    # Task 2: Live Heatmap & Vision Endpoints Tests
+    # -------------------------------------------------------------
+    def test_get_vision_heatmap_endpoints(self):
+        """Verify GET /api/vision/heatmap and /api/v2/vision/heatmap return valid schemas."""
+        res1 = self.client.get("/api/vision/heatmap")
+        self.assertEqual(res1.status_code, 200)
+        data1 = res1.get_json()
+        self.assertEqual(data1["status"], "success")
+        self.assertIn("clusters", data1)
+        self.assertIn("markers", data1)
+        self.assertIn("heatmap_points", data1)
+        self.assertIn("category_colors", data1)
+
+        res2 = self.client.get("/api/v2/vision/heatmap")
+        self.assertEqual(res2.status_code, 200)
+        data2 = res2.get_json()
+        self.assertEqual(data2["heatmap_type"], "VISUAL_DETECTION_HEATMAP")
+
+    def test_post_vision_heatmap_clear_flow(self):
+        """Verify POST /api/vision/heatmap/clear resets clusters."""
+        res = self.client.post("/api/vision/heatmap/clear")
+        self.assertEqual(res.status_code, 200)
+        data = res.get_json()
+        self.assertEqual(data["status"], "success")
+
+        get_res = self.client.get("/api/vision/heatmap")
+        get_data = get_res.get_json()
+        self.assertEqual(len(get_data["clusters"]), 0)
+        self.assertEqual(len(get_data["heatmap_points"]), 0)
+
+    def test_post_vision_heatmap_process_frame(self):
+        """Verify POST /api/vision/heatmap/process-frame decodes frame and projects detections."""
+        import cv2
+        import numpy as np
+        import io
+
+        # Create a synthetic image with a yellow high-contrast pattern
+        img = np.zeros((480, 640, 3), dtype=np.uint8)
+        # Draw high-contrast checkerboard inside a bounding box
+        cv2.rectangle(img, (200, 150), (320, 270), (255, 255, 255), -1)
+        cv2.rectangle(img, (220, 170), (300, 250), (0, 0, 0), -1)
+
+        _, buf = cv2.imencode(".jpg", img)
+        data = {
+            "lat": "37.4093",
+            "lon": "-122.0641",
+            "alt_agl_m": "25.0",
+            "hdop": "0.9"
+        }
+        data["file"] = (io.BytesIO(buf.tobytes()), "test_pat.jpg")
+
+        res = self.client.post(
+            "/api/vision/heatmap/process-frame",
+            data=data,
+            content_type="multipart/form-data"
+        )
+        self.assertEqual(res.status_code, 200)
+        payload = res.get_json()
+        self.assertEqual(payload["status"], "success")
+        self.assertIn("detections", payload)
+        self.assertIn("heatmap", payload)
 
 
 if __name__ == "__main__":

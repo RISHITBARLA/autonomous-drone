@@ -86,6 +86,26 @@ class VisionService:
             try:
                 frame = camera_manager.get_frame(preview=True)
                 if frame is not None:
+                    try:
+                        from backend.flight.mavlink_service import mavlink_service
+                        from backend.vision.geoprojector import DronePose
+                        from backend.vision.task2_vision_service import task2_vision_engine
+                        snap = mavlink_service.get_snapshot()
+                        gps_fix = bool(snap.gps_fix_type >= 2 and snap.latitude is not None and snap.longitude is not None)
+                        pose = DronePose(
+                            timestamp=time.time(),
+                            lat=snap.latitude,
+                            lon=snap.longitude,
+                            alt_agl_m=snap.altitude_relative_m or 0.0,
+                            roll_deg=snap.roll_deg or 0.0,
+                            pitch_deg=snap.pitch_deg or 0.0,
+                            yaw_deg=snap.heading_deg or 0.0,
+                            gps_fix_valid=gps_fix,
+                            hdop=snap.gps_hdop or 1.0,
+                        )
+                        task2_vision_engine.submit_frame(frame.copy(), pose)
+                    except Exception as submit_err:
+                        logger.debug("Task2 frame submission error: %s", submit_err)
                     self.process_frame(frame, source="live_camera")
             except Exception as e:
                 logger.debug("Error in vision detection loop: %s", e)

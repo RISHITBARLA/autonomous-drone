@@ -18,13 +18,14 @@ from config.settings import settings
 from config.logging_config import setup_logging
 from backend.api.health_routes import health_bp
 from backend.api.camera_routes import camera_bp
-from backend.api.vision_routes import vision_bp
+from backend.api.vision_routes import vision_bp, heatmap_bp
 from backend.api.telemetry_routes import telemetry_bp
 from backend.api.mission_routes import mission_bp
 from backend.api.geofence_routes import geofence_bp
 from backend.api.flight_routes import flight_bp
 from backend.camera.camera_manager import camera_manager
 from backend.vision.vision_service import vision_service
+from backend.vision.task2_vision_service import task2_vision_engine
 from backend.flight.mavlink_service import mavlink_service
 
 logger = setup_logging("app")
@@ -48,6 +49,7 @@ def create_app() -> Flask:
     app.register_blueprint(health_bp)
     app.register_blueprint(camera_bp)
     app.register_blueprint(vision_bp)
+    app.register_blueprint(heatmap_bp)
     app.register_blueprint(telemetry_bp)
     app.register_blueprint(mission_bp)
     app.register_blueprint(geofence_bp)
@@ -112,6 +114,7 @@ def create_app() -> Flask:
 # Clean shutdown of camera, vision, and telemetry services at exit
 atexit.register(mavlink_service.stop)
 atexit.register(vision_service.stop)
+atexit.register(task2_vision_engine.stop)
 atexit.register(camera_manager.release)
 app = create_app()
 
@@ -121,6 +124,7 @@ if __name__ == "__main__":
     mavlink_service.start()
     if settings.QR_DETECTION_ENABLED:
         vision_service.start()
+        task2_vision_engine.start()
     app.run(
         host=settings.HOST,
         port=settings.PORT,

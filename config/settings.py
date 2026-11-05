@@ -54,6 +54,20 @@ class Settings:
     QR_PROCESS_FPS: float = float(os.getenv("QR_PROCESS_FPS", "10.0"))
     QR_RTL_ON_ANY: bool = os.getenv("QR_RTL_ON_ANY", "true").lower() in ("true", "1", "yes")
 
+    # Task 2: Photogrammetry & Candidate Detection
+    CAMERA_HFOV_DEG: float = float(os.getenv("CAMERA_HFOV_DEG", "62.2"))
+    CAMERA_VFOV_DEG: float = float(os.getenv("CAMERA_VFOV_DEG", "48.8"))
+    CAMERA_MOUNT_PITCH_DEG: float = float(os.getenv("CAMERA_MOUNT_PITCH_DEG", "-90.0"))
+    CAMERA_MOUNT_ROLL_DEG: float = float(os.getenv("CAMERA_MOUNT_ROLL_DEG", "0.0"))
+    CAMERA_MOUNT_YAW_DEG: float = float(os.getenv("CAMERA_MOUNT_YAW_DEG", "0.0"))
+
+    # Task 2: Priority Detection & Heatmap
+    HEATMAP_CLUSTER_RADIUS_M: float = float(os.getenv("HEATMAP_CLUSTER_RADIUS_M", "4.0"))
+    EVIDENCE_CAPTURES_DIR: Path = Path(os.getenv("EVIDENCE_CAPTURES_DIR", CAPTURES_DIR / "evidence"))
+    QR_AUTO_RTL_ENABLED: bool = os.getenv("QR_AUTO_RTL_ENABLED", "false").lower() in ("true", "1", "yes")
+    QR_VALIDATION_REGEX: str = os.getenv("QR_VALIDATION_REGEX", r"^[A-Za-z0-9_-]{2,64}$")
+    CANDIDATE_FRAME_SAMPLE_N: int = int(os.getenv("CANDIDATE_FRAME_SAMPLE_N", "3"))
+
     # MAVLink & Flight Controller Communication
     MAVLINK_TRANSPORT: str = os.getenv("MAVLINK_TRANSPORT", "udp").lower()
     _DEFAULT_MAVLINK_CONN: str = "/dev/serial0" if MAVLINK_TRANSPORT == "serial" else "udpin:0.0.0.0:14550"
@@ -77,6 +91,7 @@ class Settings:
     def ensure_directories(cls):
         """Ensure required operational directories exist."""
         cls.CAPTURES_DIR.mkdir(parents=True, exist_ok=True)
+        cls.EVIDENCE_CAPTURES_DIR.mkdir(parents=True, exist_ok=True)
         cls.LOGS_DIR.mkdir(parents=True, exist_ok=True)
         cls.DATA_DIR.mkdir(parents=True, exist_ok=True)
 
