@@ -52,6 +52,7 @@ class Settings:
     QR_COOLDOWN_SECONDS: float = float(os.getenv("QR_COOLDOWN_SECONDS", "2.0"))
     QR_HISTORY_LIMIT: int = int(os.getenv("QR_HISTORY_LIMIT", "50"))
     QR_PROCESS_FPS: float = float(os.getenv("QR_PROCESS_FPS", "10.0"))
+    QR_RTL_ON_ANY: bool = os.getenv("QR_RTL_ON_ANY", "true").lower() in ("true", "1", "yes")
 
     # MAVLink & Flight Controller Communication
     MAVLINK_TRANSPORT: str = os.getenv("MAVLINK_TRANSPORT", "udp").lower()

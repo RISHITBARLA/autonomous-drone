@@ -118,6 +118,36 @@ class VisionService:
                     self._last_seen_payloads[payload] = now
                     self._total_detections += 1
                     data_dict["duplicate"] = False
+
+                    # Attach spatial coordinates from MAVLink telemetry
+                    try:
+                        from backend.flight.mavlink_service import mavlink_service
+                        snap = mavlink_service.get_snapshot()
+                        data_dict["latitude"] = snap.latitude
+                        data_dict["longitude"] = snap.longitude
+                        data_dict["altitude"] = snap.altitude_relative_m
+                    except Exception:
+                        data_dict["latitude"] = 0.0
+                        data_dict["longitude"] = 0.0
+                        data_dict["altitude"] = 0.0
+
+                    # QR Action Trigger: Trigger RTL on QR detection
+                    payload_clean = payload.strip().lower()
+                    qr_rtl_on_any = getattr(settings, "QR_RTL_ON_ANY", True)
+                    is_rtl_trigger = ("rtl" in payload_clean or "return" in payload_clean or qr_rtl_on_any)
+
+                    if is_rtl_trigger:
+                        data_dict["action_triggered"] = "RTL"
+                        logger.info("🎯 [VISION TRIGGER] QR Code '%s' triggered Return-to-Launch (RTL)", payload)
+                        try:
+                            from backend.flight.flight_controller import flight_controller
+                            rtl_res = flight_controller.request_rtl()
+                            data_dict["action_result"] = rtl_res
+                            logger.info("RTL Execution Outcome: %s", rtl_res)
+                        except Exception as e:
+                            logger.error("Failed executing RTL on QR trigger: %s", e)
+                            data_dict["action_result"] = {"success": False, "message": str(e)}
+
                     self._history.insert(0, data_dict)
                     if len(self._history) > self._history_limit:
                         self._history.pop()
@@ -127,9 +157,14 @@ class VisionService:
                     data_dict["duplicate"] = True
 
         with self._lock:
-            self._latest_detections = [d.to_dict() for d in detections]
+            if accepted_results:
+                self._latest_detections = accepted_results
+            elif detections:
+                self._latest_detections = [d.to_dict() for d in detections]
+            else:
+                self._latest_detections = []
 
-        return accepted_results if accepted_results else [d.to_dict() for d in detections]
+        return accepted_results if accepted_results else self._latest_detections
 
     def process_image_bytes(self, image_bytes: bytes, filename: str = "upload.jpg") -> List[Dict[str, Any]]:
         """

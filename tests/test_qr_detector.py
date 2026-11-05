@@ -130,6 +130,17 @@ class TestVisionService(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.service.process_image_bytes(b"Not an image at all")
 
+    def test_qr_rtl_trigger_action(self):
+        """Verify QR detection with RTL trigger sets action_triggered and spatial data."""
+        frame = QRDetector.generate_test_qr_frame("TRIGGER:RTL_NOW", width=320, height=320)
+        results = self.service.process_frame(frame)
+        self.assertGreaterEqual(len(results), 1)
+        det = results[0]
+        self.assertEqual(det["action_triggered"], "RTL")
+        self.assertIn("action_result", det)
+        self.assertIn("latitude", det)
+        self.assertIn("longitude", det)
+
 
 class TestVisionAPI(unittest.TestCase):
     """Test suite for /api/vision/qr REST endpoints."""

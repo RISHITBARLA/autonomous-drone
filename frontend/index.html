@@ -488,6 +488,7 @@
                   <div class="meta-row"><span class="meta-k">Center Coordinates:</span><span class="meta-v mono" id="qrCenterVal">--</span></div>
                   <div class="meta-row"><span class="meta-k">Detection Time:</span><span class="meta-v mono" id="qrTimestampVal">--</span></div>
                   <div class="meta-row"><span class="meta-k">Confidence Score:</span><span class="meta-v" id="qrScoreVal">--</span></div>
+                  <div class="meta-row"><span class="meta-k">Action Triggered:</span><span class="meta-v mono highlight" id="qrActionVal" style="color: var(--accent-amber);">--</span></div>
                 </div>
 
                 <div style="margin-top: 18px;">
@@ -683,7 +684,7 @@
                   <h4 style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 10px; text-transform: uppercase;">2. Operator Arming Actions</h4>
                   <div class="flight-btn-group" style="display: flex; gap: 10px; flex-wrap: wrap;">
                     <button class="btn btn-primary btn-danger-action" id="btnOpenArmModal" title="Requires explicit operator confirmation">
-                      ⚡ ARM Drone (AltHold)
+                      ⚡ ARM Drone
                     </button>
                     <button class="btn btn-secondary" id="btnDisarmDrone" title="Disarm Motors (Requires explicit confirmation)">
                       🛑 DISARM Drone
@@ -934,7 +935,7 @@
           This initiates a normal arming command to Pixhawk 2.4.8 (MAV_CMD_COMPONENT_ARM_DISARM, param1=1.0, param2=0.0). ArduPilot pre-arm checks will be evaluated by firmware.
         </p>
         <div style="background: rgba(0,0,0,0.3); border: 1px solid var(--border-color); padding: 10px; border-radius: var(--radius-sm); font-size: 0.8rem; margin-bottom: 14px;">
-          <div style="margin-bottom: 4px;">Target Flight Mode: <strong class="highlight" id="modalTargetMode">ALT_HOLD</strong></div>
+          <div style="margin-bottom: 4px;">Target Flight Mode: <strong class="highlight" id="modalTargetMode">CURRENT MODE</strong></div>
           <div style="margin-bottom: 4px;">Hardware Mode: <strong id="modalHwType">Physical Hardware</strong></div>
           <div>Pre-Arm Health: <strong id="modalPrearmState">PASSED</strong></div>
         </div>
@@ -965,7 +966,7 @@
           This initiates an explicit disarm command to Pixhawk 2.4.8 (MAV_CMD_COMPONENT_ARM_DISARM, param1=0.0). Motor rotation will be commanded to cease immediately.
         </p>
         <div style="background: rgba(0,0,0,0.3); border: 1px solid var(--border-color); padding: 10px; border-radius: var(--radius-sm); font-size: 0.8rem; margin-bottom: 14px;">
-          <div style="margin-bottom: 4px;">Current Flight Mode: <strong class="highlight" id="modalDisarmMode">ALT_HOLD</strong></div>
+          <div style="margin-bottom: 4px;">Current Flight Mode: <strong class="highlight" id="modalDisarmMode">CURRENT MODE</strong></div>
           <div style="margin-bottom: 4px;">Armed Status: <strong id="modalDisarmArmedState" style="color: var(--accent-red);">ARMED</strong></div>
           <div>Telemetry Status: <strong id="modalDisarmConnState">CONNECTED</strong></div>
         </div>
