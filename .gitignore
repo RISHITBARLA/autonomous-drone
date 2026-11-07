@@ -1,18 +1,9 @@
-venv/
+# Environments & Build Artifacts
 __pycache__/
-*.py[cod]
+*.pyc
 .env
-.DS_Store
+build/
+dist/
+*.log
 .vscode/
-.idea/
-logs/*.log
-*.sqlite3
-captures/*.jpg
-captures/*.png
-captures/*.jpeg
-captures/evidence/*
-captures/test_task2_targets/*
-.pytest_cache/
-.coverage
-htmlcov/
 
